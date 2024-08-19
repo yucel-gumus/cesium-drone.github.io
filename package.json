@@ -1,5 +1,5 @@
 {
-  "homepage": "http://yucel-gumus.github.io/dronesimülasyon",
+  "homepage": "https://yucel-gumus.github.io/cesium-drone.github.io/",
   "dependencies": {
     "cesium": "^1.120.0",
     "dotenv": "^16.4.5",
@@ -8,7 +8,9 @@
   "scripts": {
     "start": "npx http-server ./",
     "run": "npx http-server ./",
-    "build": "webpack"
+    "build": "webpack",
+    "predeploy": "npm run build",
+    "deploy": "gh-pages -d dist"
   },
   "devDependencies": {
     "gh-pages": "^6.1.1",
