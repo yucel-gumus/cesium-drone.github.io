@@ -1,0 +1,29 @@
+<!doctype html><html lang="tr"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><title>Cesium Drone Görüntüleyici</title><script src="./node_modules/cesium/Build/Cesium/Cesium.js"></script><link href="./node_modules/cesium/Build/Cesium/Widgets/widgets.css" rel="stylesheet"/><style>body {
+        margin: 0;
+        padding: 0;
+      }
+
+      #cesiumContainer {
+        width: 100%;
+        height: 100vh;
+      }
+
+      #controlPanel {
+        position: absolute;
+        top: 10px;
+        left: 10px;
+        background: rgba(255, 255, 255, 0.8);
+        padding: 10px;
+        border-radius: 5px;
+        box-shadow: 0 0 10px rgba(0, 0, 0, 0.2);
+      }
+      .cesium-viewer-timelineContainer {
+        display: none !important;
+      }
+
+      button {
+        margin-top: 10px;
+        padding: 5px 10px;
+        cursor: pointer;
+      }</style><script defer="defer" src="dronefocus.bundle.js"></script><script defer="defer" src="flystart.bundle.js"></script><script defer="defer" src="createRota.bundle.js"></script><script defer="defer" src="config.bundle.js"></script></head><body><div id="cesiumContainer"></div><div id="controlPanel"><label for="altitudeSelect">Yükseklik Seç:</label> <select id="altitudeSelect"><option value="500">500 metre</option><option value="1000">1000 metre</option><option value="1500">1500 metre</option><option value="1">İndir</option></select> <button id="flyButton">Uçuşu Başlat</button> <button id="createRota">Rota Oluştur</button> <button id="followRota">Rota Takip Et</button></div><script type="module" src="./dronefocus.js"></script><script type="module" src="./flystart.js"></script><script type="module" src="./createRota.js"></script><script type="module">import config from './config.js';
+        Cesium.Ion.defaultAccessToken = config.CESIUM_ION_TOKEN;</script></body></html>
