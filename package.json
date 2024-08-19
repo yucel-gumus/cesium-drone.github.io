@@ -1,0 +1,19 @@
+{
+  "homepage": "http://yucel-gumus.github.io/dronesimülasyon",
+  "dependencies": {
+    "cesium": "^1.120.0",
+    "dotenv": "^16.4.5",
+    "dotenv-webpack": "^8.1.0"
+  },
+  "scripts": {
+    "start": "npx http-server ./",
+    "run": "npx http-server ./",
+    "build": "webpack"
+  },
+  "devDependencies": {
+    "gh-pages": "^6.1.1",
+    "http-server": "^14.1.1",
+    "webpack": "^5.93.0",
+    "webpack-cli": "^5.1.4"
+  }
+}
