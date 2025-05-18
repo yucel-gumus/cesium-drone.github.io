@@ -47,7 +47,7 @@
 
 1. **Projeyi klonlayın**
 \`\`\`bash
-git clone https://github.com/yourusername/cesium-drone.github.io.git
+git clone https://github.com/yucel-gumus/cesium-drone.github.io.git
 cd cesium-drone.github.io
 \`\`\`
 
@@ -139,12 +139,12 @@ Bu proje MIT lisansı altında lisanslanmıştır. Detaylı bilgi için [LICENSE
 
 ### 🤝 İletişim ve Katkıda Bulunma
 
-- 🐛 Hata bildirimleri için [Issues](https://github.com/yourusername/cesium-drone.github.io/issues) sayfasını kullanın
-- 💡 Yeni özellik önerileri için [Pull Request](https://github.com/yourusername/cesium-drone.github.io/pulls) gönderin
-- 📧 İletişim: your-email@example.com
+- 🐛 Hata bildirimleri için [Issues](https://github.com/yucel-gumus/cesium-drone.github.io/issues) sayfasını kullanın
+- 💡 Yeni özellik önerileri için [Pull Request](https://github.com/yucel-gumus/cesium-drone.github.io/pulls) gönderin
+- 📧 İletişim: yucelgumus61@yahoo.com
 
 ---
 
 <div align="center">
-  <sub>Built with ❤️ by Your Name</sub>
+  <sub>Built with ❤️ by Yücel Gümüş</sub>
 </div>

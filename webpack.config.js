@@ -21,11 +21,10 @@ module.exports = {
     new CopyWebpackPlugin({
       patterns: [
         { from: 'public', to: '' },
-        { from: 'src/points.json' },
         { from: 'src/index.html' },
         { from: 'src/style.css' },
         { from: 'CesiumDrone.glb' },
-        { from: 'src/ui-controller.js' },
+        { from: 'src/ui-controller.js' }
       ]
     })
   ],
