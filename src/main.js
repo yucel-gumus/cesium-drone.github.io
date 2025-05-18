@@ -43,9 +43,11 @@ viewer.clock.shouldAnimate = false;
 
 viewer.timeline.zoomTo(mainJsAnimationConfig.start, mainJsAnimationConfig.stop);
 
-
+const fetchUrl = window.location.hostname === 'yucel-gumus.github.io'
+    ? '/cesium-drone.github.io/points.json'
+    : '/points.json';
 let points = [];
-fetch('/points.json', {
+fetch(fetchUrl, {
     headers: {
         'Accept': 'application/json'
     }
@@ -157,7 +159,7 @@ function initializeDronePath() {
 
 
 
- document.getElementById('startButton').addEventListener('click', function () {
+    document.getElementById('startButton').addEventListener('click', function () {
         window.droneUI.startUpdates();
         window.droneUI.updateConnectionStatus('Aktif');
         entity.path.show = true;
