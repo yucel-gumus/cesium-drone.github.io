@@ -1,0 +1,158 @@
+/* style.css */
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body, html {
+  height: 100%;
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  background: transparent;
+  overflow: hidden;
+  color: #ffffff;
+}
+
+.app-container {
+  display: flex;
+  height: 100vh;
+  overflow: hidden;
+}
+
+/* === Side Panel === */
+.side-panel {
+  width: 320px;
+  backdrop-filter: blur(10px);
+  background-color: rgb(84, 36, 36);
+  display: flex;
+  flex-direction: column;
+  padding: 20px;
+  border-right: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.panel-header {
+  text-align: center;
+  margin-bottom: 30px;
+}
+
+.logo {
+  width: 64px;
+  height: 64px;
+  margin-bottom: 10px;
+}
+
+.app-title {
+  font-size: 1.4rem;
+  color: #00d8ff;
+}
+
+/* === Control Panel & Info === */
+.control-panel, .info-panel {
+  margin-bottom: 30px;
+}
+
+.section-title {
+  font-size: 1.2rem;
+  margin-bottom: 10px;
+  color: #00d8ff;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* === Buttons === */
+.button-group {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.control-button {
+  background-color: rgba(0, 216, 255, 0.2);
+  border: 1px solid #00d8ff;
+  color: #ffffff;
+  padding: 12px 16px;
+  font-size: 1rem;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  transition: all 0.3s ease;
+}
+
+.control-button.primary {
+  background-color: rgba(0, 216, 255, 0.4);
+}
+
+.control-button:hover {
+  background-color: rgba(0, 216, 255, 0.6);
+}
+
+/* === Drone Info === */
+.status-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 12px;
+  margin-top: 10px;
+}
+
+.status-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px;
+  background-color: rgba(255, 255, 255, 0.05);
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.status-label {
+  flex: 1;
+  font-weight: 500;
+  color: #ffffff;
+}
+
+.status-value {
+  font-weight: bold;
+  color: #00ffb3;
+}
+
+/* === Cesium Container === */
+.main-content {
+  flex: 1;
+  position: relative;
+}
+
+#cesiumContainer {
+  width: 100%;
+  height: 100%;
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 0;
+}
+
+/* === Responsive Design === */
+@media (max-width: 768px) {
+  .app-container {
+    flex-direction: column;
+  }
+
+  .side-panel {
+    width: 100%;
+    height: auto;
+    border-right: none;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  }
+
+  .main-content {
+    height: calc(100% - 300px);
+  }
+}
+
+
+.cesium-timeline-main{
+    display: none;
+}
