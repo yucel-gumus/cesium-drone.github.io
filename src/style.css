@@ -1,188 +1,158 @@
-/* Genel Stiller */
+/* style.css */
+
 * {
-    margin: 0;
-    padding: 0;
-    box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
 }
 
-body {
-    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-    background-color: #f0f2f5;
-    color: #2c3e50;
-    height: 100vh;
-    margin: 0;
+body, html {
+  height: 100%;
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  background: transparent;
+  overflow: hidden;
+  color: #ffffff;
 }
 
 .app-container {
-    display: flex;
-    height: 100vh;
-    background-color: #f0f2f5;
-}
-.cesium-timeline-main{
-    display: none;
-}
-/* Sol Panel */
-.side-panel {
-    width: 350px;
-    background: linear-gradient(135deg, rgba(44, 62, 80, 0.65) 0%, rgba(52, 152, 219, 0.65) 100%);
-    padding: 20px;
-    display: flex;
-    flex-direction: column;
-    gap: 20px;
-    box-shadow: 0 0 20px rgba(0, 0, 0, 0.1);
-    z-index: 1000;
-    color: white;
-    backdrop-filter: blur(5px);
-    -webkit-backdrop-filter: blur(5px);
-    transition: all 0.3s ease;
+  display: flex;
+  height: 100vh;
+  overflow: hidden;
 }
 
-/* Panel Başlığı */
+/* === Side Panel === */
+.side-panel {
+  width: 320px;
+  backdrop-filter: blur(10px);
+  background-color: rgb(84, 36, 36);
+  display: flex;
+  flex-direction: column;
+  padding: 20px;
+  border-right: 1px solid rgba(255, 255, 255, 0.1);
+}
+
 .panel-header {
-    display: flex;
-    align-items: center;
-    gap: 15px;
-    padding-bottom: 20px;
-    border-bottom: 2px solid rgba(255, 255, 255, 0.1);
+  text-align: center;
+  margin-bottom: 30px;
 }
 
 .logo {
-    width: 40px;
-    height: 40px;
+  width: 64px;
+  height: 64px;
+  margin-bottom: 10px;
 }
 
 .app-title {
-    font-size: 1.5rem;
-    color: white;
-    margin: 0;
+  font-size: 1.4rem;
+  color: #00d8ff;
 }
 
-/* Bölüm Başlıkları */
+/* === Control Panel & Info === */
+.control-panel, .info-panel {
+  margin-bottom: 30px;
+}
+
 .section-title {
-    font-size: 1.1rem;
-    color: white;
-    margin-bottom: 15px;
-    display: flex;
-    align-items: center;
-    gap: 10px;
+  font-size: 1.2rem;
+  margin-bottom: 10px;
+  color: #00d8ff;
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
-/* Durum Paneli */
-.info-panel, .control-panel, .scan-info-panel {
-    background: rgba(255, 255, 255, 0.15);
-    border-radius: 12px;
-    padding: 20px;
-    backdrop-filter: blur(10px);
-    -webkit-backdrop-filter: blur(10px);
-    border: 1px solid rgba(255, 255, 255, 0.1);
-}
-
-.status-grid, .info-grid {
-    display: grid;
-    grid-template-columns: repeat(2, 1fr);
-    gap: 15px;
-}
-
-.status-item, .info-item {
-    display: flex;
-    flex-direction: column;
-    gap: 5px;
-    padding: 10px;
-    background: rgba(255, 255, 255, 0.05);
-    border-radius: 8px;
-}
-
-.status-label, .info-label {
-    color: rgba(255, 255, 255, 0.7);
-    font-size: 0.9rem;
-}
-
-.status-value, .info-value {
-    color: white;
-    font-weight: 500;
-    font-size: 1.1rem;
-}
-
-/* Butonlar */
+/* === Buttons === */
 .button-group {
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
 }
 
 .control-button {
-    padding: 12px 20px;
-    border: none;
-    border-radius: 8px;
-    cursor: pointer;
-    font-size: 1rem;
-    transition: all 0.3s ease;
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    color: white;
-    background: rgba(255, 255, 255, 0.1);
-    backdrop-filter: blur(5px);
-}
-
-.control-button:hover {
-    transform: translateY(-2px);
-    box-shadow: 0 5px 15px rgba(0, 0, 0, 0.2);
-}
-
-.control-button i {
-    font-size: 1.2rem;
+  background-color: rgba(0, 216, 255, 0.2);
+  border: 1px solid #00d8ff;
+  color: #ffffff;
+  padding: 12px 16px;
+  font-size: 1rem;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  transition: all 0.3s ease;
 }
 
 .control-button.primary {
-    background: #cce9fc;
+  background-color: rgba(0, 216, 255, 0.4);
 }
 
-.control-button.success {
-    background: #2ecc71;
+.control-button:hover {
+  background-color: rgba(0, 216, 255, 0.6);
 }
 
-.control-button.danger {
-    background: #e74c3c;
+/* === Drone Info === */
+.status-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 12px;
+  margin-top: 10px;
 }
 
-/* Durum Rozeti */
-.status-badge {
-    display: inline-block;
-    padding: 5px 10px;
-    border-radius: 15px;
-    background: #c8e7fb;
-    font-size: 0.9rem;
+.status-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px;
+  background-color: rgba(255, 255, 255, 0.05);
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
 }
 
-/* Ana İçerik */
+.status-label {
+  flex: 1;
+  font-weight: 500;
+  color: #ffffff;
+}
+
+.status-value {
+  font-weight: bold;
+  color: #00ffb3;
+}
+
+/* === Cesium Container === */
 .main-content {
-    flex: 1;
-    position: relative;
+  flex: 1;
+  position: relative;
 }
 
 #cesiumContainer {
-    width: 100%;
-    height: 100%;
-    position: relative;
+  width: 100%;
+  height: 100%;
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 0;
 }
 
-/* Responsive Tasarım */
+/* === Responsive Design === */
 @media (max-width: 768px) {
-    .side-panel {
-        width: 100%;
-        height: auto;
-        position: absolute;
-        bottom: 0;
-        transform: translateY(70%);
-        transition: transform 0.3s ease;
-    }
+  .app-container {
+    flex-direction: column;
+  }
 
-    .side-panel:hover {
-        transform: translateY(0);
-    }
+  .side-panel {
+    width: 100%;
+    height: auto;
+    border-right: none;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  }
 
-    .status-grid {
-        grid-template-columns: 1fr;
-    }
+  .main-content {
+    height: calc(100% - 300px);
+  }
+}
+
+
+.cesium-timeline-main{
+    display: none;
 }

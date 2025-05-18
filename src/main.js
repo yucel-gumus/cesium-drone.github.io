@@ -1,4 +1,8 @@
-Cesium.Ion.defaultAccessToken = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJqdGkiOiI1MmI2MjkzYS1mMmE5LTRkODEtYTZiMC00YTZiMDgzZWU1YjAiLCJpZCI6ODYyNTEsImlhdCI6MTc0NjMxMjgxM30.OK5gINXOFgBwFNachWVbWWwYDpFeJXxNMS2_Ot6nMRg";
+import { CESIUM_ION_TOKEN } from './config.js';
+
+Cesium.Ion.defaultAccessToken = CESIUM_ION_TOKEN;
+import DroneUIController from './ui-controller.js';
+import './style.css';
 
 window.viewer = new Cesium.Viewer("cesiumContainer", {
     shouldAnimate: true,
@@ -25,7 +29,7 @@ viewer.scene.globe.enableLighting = true;
 viewer.scene.globe.depthTestAgainstTerrain = true;
 
 const mainJsAnimationConfig = {
-    start: Cesium.JulianDate.fromDate(new Date(2015, 2, 25, 16)),
+    start: Cesium.JulianDate.fromDate(new Date(2025, 2, 25, 16)),
     duration: 40,
     get stop() { return Cesium.JulianDate.addSeconds(this.start, this.duration, new Cesium.JulianDate()); }
 };
@@ -39,7 +43,6 @@ viewer.clock.shouldAnimate = false;
 
 viewer.timeline.zoomTo(mainJsAnimationConfig.start, mainJsAnimationConfig.stop);
 
-import './style.css';
 
 let points = [];
 fetch('/points.json', {
@@ -75,15 +78,6 @@ function initializeDronePath() {
     if (!points || points.length < 2) {
         return;
     }
-    const firstTime = 1.0;
-    const lastTime = 50.0;
-    const delta = lastTime - firstTime;
-
-    const numPoints = points.length;
-    const times = [];
-    for (let i = 0; i < numPoints; i++) {
-        times.push(firstTime + (delta * i) / (numPoints - 1));
-    }
     const sampledPosition = new Cesium.SampledPositionProperty();
     const numberOfSamples = points.length;
 
@@ -117,6 +111,8 @@ function initializeDronePath() {
             }),
         ]),
         position: sampledPosition,
+        velocity: new Cesium.VelocityVectorProperty(sampledPosition),
+
         orientation: orientation,
         model: {
             uri: "./CesiumDrone.glb",
@@ -125,6 +121,7 @@ function initializeDronePath() {
             scale: 2.0,
         },
         path: {
+            show: false,
             material: new Cesium.PolylineGlowMaterialProperty({
                 glowPower: 0.1,
                 color: Cesium.Color.RED,
@@ -137,7 +134,9 @@ function initializeDronePath() {
 
         viewFrom: new Cesium.Cartesian3(-10, 5, 5),
     });
-
+    if (!window.droneUI) {
+        window.droneUI = new DroneUIController();
+    }
     viewer.scene.camera.flyTo({
         destination: Cesium.Cartesian3.fromDegrees(40.2925729751587, 40.61789421298509, 1500),
         complete: function () {
@@ -147,33 +146,92 @@ function initializeDronePath() {
                     duration: 3.0,
                     complete: function () {
                         viewer.trackedEntity = entity;
+                        window.droneUI.updateConnectionStatus('Bağlantı Kuruldu');
+
                     }
                 });
             }, 1000);
         }
     });
-    viewer.clock.onTick.addEventListener(function (clock) {
-        if (Cesium.JulianDate.equals(clock.startTime, mainJsAnimationConfig.start) &&
-            Cesium.JulianDate.equals(clock.stopTime, mainJsAnimationConfig.stop) &&
-            Cesium.JulianDate.compare(clock.currentTime, mainJsAnimationConfig.stop) >= 0) {
-            viewer.clock.shouldAnimate = false;
-        }
-    });
-    document.getElementById('startButton').addEventListener('click', function () {
 
+
+
+
+ document.getElementById('startButton').addEventListener('click', function () {
+        window.droneUI.startUpdates();
+        window.droneUI.updateConnectionStatus('Aktif');
+        entity.path.show = true;
         entity.viewFrom = new Cesium.Cartesian3(-10, 0, -10);
         viewer.trackedEntity = undefined;
         viewer.trackedEntity = entity;
         viewer.clock.startTime = mainJsAnimationConfig.start.clone();
         viewer.clock.stopTime = mainJsAnimationConfig.stop.clone();
         viewer.clock.currentTime = mainJsAnimationConfig.start.clone();
-        viewer.clock.multiplier = 2.0;
+        viewer.clock.multiplier = 1.0;
         viewer.clock.clockRange = Cesium.ClockRange.CLAMPED;
         viewer.clock.shouldAnimate = true;
+
+        // Linear interpolation (lerp) fonksiyonu
+        function lerp(start, end, t) {
+            return start * (1 - t) + end * t;
+        }
+
+        // Tek bir onTick listener kullanıyoruz
+        viewer.clock.onTick.addEventListener(function (clock) {
+            const currentTime = Cesium.JulianDate.secondsDifference(clock.currentTime, mainJsAnimationConfig.start);
+            const totalDuration = mainJsAnimationConfig.duration;
+            const transitionDuration = totalDuration * 0.1;
+
+            let currentSpeed;
+            if (currentTime < totalDuration * 0.3) {
+                if (currentTime < transitionDuration) {
+                    currentSpeed = lerp(0, 4, currentTime / transitionDuration);
+                } else {
+                    currentSpeed = 4;
+                }
+                viewer.clock.multiplier = 1.0;
+            }
+            else if (currentTime < totalDuration * 0.7) {
+                const accelerationTime = (currentTime - totalDuration * 0.3) / transitionDuration;
+                if (accelerationTime < 1) {
+                    currentSpeed = lerp(4, 12, accelerationTime);
+                } else {
+                    currentSpeed = 12;
+                }
+                viewer.clock.multiplier = 3.0;
+            }
+            else if (currentTime < totalDuration) {
+                const decelerationTime = (currentTime - totalDuration * 0.7) / transitionDuration;
+                if (currentTime > totalDuration - transitionDuration) {
+                    const finalSlowdown = (currentTime - (totalDuration - transitionDuration)) / transitionDuration;
+                    currentSpeed = lerp(4, 0, finalSlowdown);
+                } else if (decelerationTime < 1) {
+                    currentSpeed = lerp(12, 4, decelerationTime);
+                } else {
+                    currentSpeed = 4;
+                }
+                viewer.clock.multiplier = 1.0;
+            }
+            else {
+                currentSpeed = 0;
+                viewer.clock.shouldAnimate = false;
+                window.droneUI.updateConnectionStatus('Bağlantı Kesildi');
+                window.droneUI.updateAltitude(0);
+                window.droneUI.updateBatteryStatus(100);
+                window.droneUI.stopUpdates();
+            }
+
+            window.droneUI.updateSpeed(Math.round(currentSpeed));
+        });
+
         entity.position.setInterpolationOptions({
             interpolationDegree: 5,
             interpolationAlgorithm: Cesium.LagrangePolynomialApproximation,
         });
         entity.trackingReferenceFrame = Cesium.TrackingReferenceFrame.VELOCITY;
     });
+
+
+
+
 }

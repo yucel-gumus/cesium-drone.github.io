@@ -23,7 +23,8 @@ module.exports = {
         { from: 'src/points.json' },
         { from: 'src/index.html' },
         { from: 'src/style.css' },
-        { from: 'CesiumDrone.glb' }
+        { from: 'CesiumDrone.glb' },
+        { from: 'src/ui-controller.js' },
       ]
     })
   ],
