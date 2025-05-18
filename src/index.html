@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="tr">
+
+<head>
+    <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Drone Simülasyon Sistemi</title>
+  <link rel="icon" type="image/png" href="https://img.icons8.com/fluency/48/drone.png">
+  <script src="https://cesium.com/downloads/cesiumjs/releases/1.129/Build/Cesium/Cesium.js"></script>
+  <link href="https://cesium.com/downloads/cesiumjs/releases/1.129/Build/Cesium/Widgets/widgets.css" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+  <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+    <div class="app-container">
+        <div class="side-panel">
+            <div class="panel-header">
+                <img src="https://img.icons8.com/fluency/96/drone.png" alt="Drone İkonu" class="logo">
+                <h1 class="app-title">Drone Kontrol Sistemi</h1>
+            </div>
+            <div class="control-panel">
+                <h2 class="section-title"><i class="fas fa-gamepad"></i> Kontroller</h2>
+                <div class="button-group">
+                    <button id="startButton" class="control-button primary">
+                        <i class="fas fa-play"></i>
+                        <span>Keşif Uçuşu Başlat</span>
+                    </button>              
+                </div>
+            </div>
+            <div class="info-panel">
+                <h2 class="section-title"><i class="fas fa-info-circle"></i> Drone Durumu</h2>
+                <div class="status-grid">
+                    <div class="status-item">
+                        <i class="fas fa-signal"></i>
+                        <span class="status-label">Bağlantı:</span>
+                        <span class="status-value" id="connectionStatus">Aktif</span>
+                    </div>
+                    <div class="status-item">
+                        <i class="fas fa-battery-three-quarters"></i>
+                        <span class="status-label">Batarya:</span>
+                        <span class="status-value" id="batteryStatus">100%</span>
+                    </div>
+                    <div class="status-item">
+                        <i class="fas fa-altitude"></i>
+                        <span class="status-label">Yükseklik:</span>
+                        <span class="status-value" id="altitudeStatus">0m</span>
+                    </div>
+                    <div class="status-item">
+                        <i class="fas fa-tachometer-alt"></i>
+                        <span class="status-label">Hız:</span>
+                        <span class="status-value" id="speedStatus">0 km/s</span>
+                    </div>
+                </div>
+            </div>
+
+           
+           
+        </div>
+        <div class="main-content">
+            <div id="cesiumContainer"></div>
+        </div>
+    </div>
+
+  <script src="bundle.js"></script>
+</body>
+
+</html>

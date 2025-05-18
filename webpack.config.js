@@ -1,10 +1,45 @@
 const path = require('path');
+const CopyWebpackPlugin = require('copy-webpack-plugin');
 
 module.exports = {
-  entry: './dronefocus.js', // Giriş noktası (entry point)
+  entry: './src/main.js',
   output: {
-    filename: './createRota.js', // Çıktı dosyası
-    path: path.resolve(__dirname, 'dist') // Çıktı dizini
+    filename: 'bundle.js',
+    path: path.resolve(__dirname, 'dist'),
+    clean: true
   },
-  mode: 'production', // Prodüksiyon modu (optimizasyonlar yapar)
+  mode: 'development',
+  module: {
+    rules: [
+      {
+        test: /\.css$/,
+        use: ['style-loader', 'css-loader']
+      }
+    ]
+  },
+  plugins: [
+    new CopyWebpackPlugin({
+      patterns: [
+        { from: 'src/points.json' },
+        { from: 'src/index.html' },
+        { from: 'src/style.css' },
+        { from: 'CesiumDrone.glb' }
+      ]
+    })
+  ],
+  devServer: {
+    static: [
+      {
+        directory: path.join(__dirname, 'dist'),
+        publicPath: '/'
+      },
+      {
+        directory: path.join(__dirname, 'src'),
+        publicPath: '/'
+      }
+    ],
+    compress: true,
+    port: 9000,
+    hot: true
+  }
 };

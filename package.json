@@ -6,16 +6,20 @@
     "dotenv-webpack": "^8.1.0"
   },
   "scripts": {
-    "start": "npx http-server ./",
-    "run": "npx http-server ./",
+    "start": "webpack serve --open",
     "build": "webpack",
     "predeploy": "npm run build",
     "deploy": "gh-pages -d dist"
   },
   "devDependencies": {
+    "copy-webpack-plugin": "^13.0.0",
+    "css-loader": "^7.1.2",
     "gh-pages": "^6.1.1",
     "http-server": "^14.1.1",
+    "path-browserify": "^1.0.1",
+    "style-loader": "^4.0.0",
     "webpack": "^5.93.0",
-    "webpack-cli": "^5.1.4"
+    "webpack-cli": "^5.1.4",
+    "webpack-dev-server": "^5.2.1"
   }
 }
