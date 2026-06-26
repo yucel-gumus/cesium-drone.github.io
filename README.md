@@ -1,150 +1,56 @@
-# 🚁 3D Drone Simülasyon Sistemi
+# 3D Drone Simülasyonu (CesiumJS)
 
-<div align="center">
-  <img src="https://img.icons8.com/fluency/96/drone.png" alt="Drone Simülasyon Logo"/>
-  <p><strong>CesiumJS ile Geliştirilmiş 3D Drone Kontrol ve İzleme Sistemi</strong></p>
-</div>
+**CesiumJS** ile 3D dünya görünümünde drone modeli, telemetri paneli ve önceden tanımlı uçuş rotası animasyonu.
 
-## 📋 İçerik Tablosu
-- [🌟 Özellikler](#-özellikler)
-- [🛠️ Teknolojiler](#️-teknolojiler)
-- [⚡ Hızlı Başlangıç](#-hızlı-başlangıç)
-- [📝 Kullanım Kılavuzu](#-kullanım-kılavuzu)
-- [🔧 Geliştirme](#-geliştirme)
-- [📱 Desteklenen Platformlar](#-desteklenen-platformlar)
-- [📄 Lisans](#-lisans)
+**Canlı:** [yucel-gumus.github.io/cesium-drone.github.io](https://yucel-gumus.github.io/cesium-drone.github.io/)  
+**GitHub:** [yucel-gumus/cesium-drone.github.io](https://github.com/yucel-gumus/cesium-drone.github.io)
 
-## 🌟 Özellikler
+---
 
-- 🌍 CesiumJS ile gerçekçi 3D harita görüntüleme
-- 🎮 Gerçek zamanlı drone kontrol arayüzü
-- 📊 Canlı telemetri veri görüntüleme
-  - Batarya durumu
-  - Yükseklik bilgisi
-  - Hız göstergesi
-  - Bağlantı durumu
-- 🛣️ Önceden planlanmış uçuş rotası
-- 🎥 Çoklu kamera açıları
-- 🔄 Smooth animasyonlar ve geçişler
-- 📱 Tüm cihazlara uyumlu responsive tasarım
+## Özellikler
 
-## 🛠️ Teknolojiler
+- Cesium globe + `CesiumDrone.glb` 3D model
+- Batarya, irtifa, hız, bağlantı göstergeleri
+- Kamera açıları ve smooth path animasyonu
+- Webpack 5 dev server ve production bundle
+- GitHub Pages (`gh-pages -d dist`)
 
-- **Frontend**: JavaScript (ES6+), HTML5, CSS3
-- **3D Görselleştirme**: CesiumJS
-- **Build Tool**: Webpack
-- **Package Manager**: npm
-- **Version Control**: Git
+---
 
-## ⚡ Hızlı Başlangıç
+## Teknoloji
 
-### Gereksinimler
-- Node.js (16.x veya üzeri)
-- npm (Node Package Manager)
-- Cesium ion hesabı ve access token
+- Cesium 1.120, Webpack, dotenv-webpack (ion token vb.)
+- ES6+ kaynak `src/`, çıktı `dist/`
 
-### Kurulum
+---
 
-1. **Projeyi klonlayın**
-\`\`\`bash
+## Kurulum
+
+```bash
 git clone https://github.com/yucel-gumus/cesium-drone.github.io.git
 cd cesium-drone.github.io
-\`\`\`
-
-2. **Bağımlılıkları yükleyin**
-\`\`\`bash
 npm install
-\`\`\`
+```
 
-3. **Cesium ion token'ınızı ayarlayın**
-\`\`\`bash
-cp src/config.template.js src/config.js
-\`\`\`
-- \`config.js\` dosyasını açın ve \`YOUR_CESIUM_ION_TOKEN_HERE\` yerine kendi token'ınızı yazın
+### Cesium Ion (gerekirse)
 
-4. **Geliştirme sunucusunu başlatın**
-\`\`\`bash
-npm start
-\`\`\`
+`.env` içinde `CESIUM_ION_ACCESS_TOKEN` — [cesium.com/ion](https://cesium.com/ion) ücretsiz token.
 
-5. Tarayıcınızda \`http://localhost:8080\` adresine gidin
-
-## 📝 Kullanım Kılavuzu
-
-### Temel Kontroller
-
-1. **Drone Kontrolü**
-   - "Keşif Uçuşu Başlat" butonuna tıklayarak simülasyonu başlatın
-   - Gerçek zamanlı telemetri verilerini sol panelden takip edin
-   - Uçuş rotasını harita üzerinde görüntüleyin
-
-2. **Kamera Kontrolleri**
-   - Sol Tık + Sürükle: Kamerayı döndür
-   - Sağ Tık + Sürükle: Yakınlaştır/Uzaklaştır
-   - Orta Tık + Sürükle: Kaydır
-
-### Uçuş Rotası Ayarları
-
-\`points.json\` dosyasını düzenleyerek özel uçuş rotaları oluşturabilirsiniz:
-
-\`\`\`json
-{
-  "dronePoints": [
-    {
-      "latitude": 40.2925729751587,
-      "longitude": 40.61789421298509,
-      "height": 1500
-    }
-  ]
-}
-\`\`\`
-
-## 🔧 Geliştirme
-
-### Proje Yapısı
-\`\`\`
-cesium-drone.github.io/
-├── src/
-│   ├── index.html      # Ana HTML dosyası
-│   ├── main.js         # Ana uygulama mantığı
-│   ├── style.css       # Stil tanımlamaları
-│   ├── ui-controller.js # UI kontrolcüsü
-│   └── config.js       # Yapılandırma dosyası
-├── public/
-│   ├── CesiumDrone.glb # 3D drone modeli
-│   └── points.json     # Uçuş rotası verileri
-├── package.json        # Proje bağımlılıkları
-└── README.md          # Dokümantasyon
-\`\`\`
-
-### Production Build
-
-Production ortamı için optimize edilmiş bir build oluşturmak için:
-
-\`\`\`bash
+```bash
+npm start          # webpack serve --open
 npm run build
-\`\`\`
-
-## 📱 Desteklenen Platformlar
-
-- 💻 Masaüstü Bilgisayarlar (Windows, macOS, Linux)
-- 📱 Mobil Cihazlar (iOS, Android)
-- 🌐 Modern Web Tarayıcıları (Chrome, Firefox, Safari, Edge)
-
-## 📄 Lisans
-
-Bu proje MIT lisansı altında lisanslanmıştır. Detaylı bilgi için [LICENSE](LICENSE) dosyasına bakınız.
+npm run deploy     # GitHub Pages
+```
 
 ---
 
-### 🤝 İletişim ve Katkıda Bulunma
+## Asset'ler
 
-- 🐛 Hata bildirimleri için [Issues](https://github.com/yucel-gumus/cesium-drone.github.io/issues) sayfasını kullanın
-- 💡 Yeni özellik önerileri için [Pull Request](https://github.com/yucel-gumus/cesium-drone.github.io/pulls) gönderin
-- 📧 İletişim: yucelgumus61@yahoo.com
+- `CesiumDrone.glb` — drone mesh
+- `public/` — statik dosyalar
 
 ---
 
-<div align="center">
-  <sub>Built with ❤️ by Yücel Gümüş</sub>
-</div>
+## Lisans
+
+MIT; Cesium kullanım şartları geçerlidir.
