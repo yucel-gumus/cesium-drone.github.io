@@ -116,7 +116,7 @@ eval("\n\n/* istanbul ignore next  */\nfunction styleTagTransform(css, styleElem
   \***********************/
 /***/ ((__unused_webpack_module, __webpack_exports__, __webpack_require__) => {
 
-eval("__webpack_require__.r(__webpack_exports__);\n/* harmony export */ __webpack_require__.d(__webpack_exports__, {\n/* harmony export */   CESIUM_ION_TOKEN: () => (/* binding */ CESIUM_ION_TOKEN)\n/* harmony export */ });\nconst CESIUM_ION_TOKEN = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJqdGkiOiI1MmI2MjkzYS1mMmE5LTRkODEtYTZiMC00YTZiMDgzZWU1YjAiLCJpZCI6ODYyNTEsImlhdCI6MTc0NjMxMjgxM30.OK5gINXOFgBwFNachWVbWWwYDpFeJXxNMS2_Ot6nMRg';\n\n//# sourceURL=webpack:///./src/config.js?");
+eval("__webpack_require__.r(__webpack_exports__);\n/* harmony export */ __webpack_require__.d(__webpack_exports__, {\n/* harmony export */   CESIUM_ION_TOKEN: () => (/* binding */ CESIUM_ION_TOKEN)\n/* harmony export */ });\n// Cesium Ion Access Token\n// Buraya kendi Cesium Ion Token'ınızı yapıştırabilirsiniz.\nconst CESIUM_ION_TOKEN = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJqdGkiOiIzNjBiNGI3MS0xNzc2LTQ4M2YtOTNhNS05YmY3ZDgwYTg5NzciLCJpZCI6ODYyNTEsImlhdCI6MTY0NzYwNjIwOH0.Ggq7--wcRU5pF2hEjsi14hQeCLIxlqrcyrQvvwaupGo';\n\n\n//# sourceURL=webpack:///./src/config.js?");
 
 /***/ }),
 
