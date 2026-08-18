@@ -1,91 +1,105 @@
-# 🛸 3D Drone Uçuş Simülasyonu (CesiumJS 3D Geospatial Simulation)
+# 🛸 Cesium Drone - 3D Geospatial Drone Flight & Telemetry Simulator
 
-3D Drone Uçuş Simülasyonu; dünya genelinde yüksek çözünürlüklü uydu görüntüleri ve yükseklik (terrain) haritaları üzerinde önceden tanımlanmış bir uçuş rotası boyunca hareket eden bir 3D drone modelini ve anlık uçuş verilerini (telemetri) simüle eden, **CesiumJS & Webpack 5** tabanlı gelişmiş bir coğrafi bilgi sistemi (CBS) ve grafik uygulamasıdır.
+[![JavaScript](https://img.shields.io/badge/JavaScript-ES6+-F7DF1E?style=for-the-badge&logo=javascript&logoColor=black)](https://developer.mozilla.org/)
+[![CesiumJS](https://img.shields.io/badge/CesiumJS-3D_Globe-00A3E0?style=for-the-badge&logo=cesium&logoColor=white)](https://cesium.com/platform/cesiumjs/)
+[![Webpack 5](https://img.shields.io/badge/Webpack_5-Bundler-8DD6F9?style=for-the-badge&logo=webpack&logoColor=black)](https://webpack.js.org/)
+[![3D GLTF](https://img.shields.io/badge/3D_Model-GLTF_%2F_GLB-FF5722?style=for-the-badge)](https://www.khronos.org/gltf/)
+[![Portfolio](https://img.shields.io/badge/Portfolio-yucelgumus.dev-2563EB?style=for-the-badge&logo=google-chrome&logoColor=white)](https://www.yucelgumus.dev/)
+
+> **CesiumJS** 3D küre motoru ve **Webpack 5** mimarisi üzerinde çalışan; önceden tanımlanmış coğrafi koordinat rotaları boyunca 3 boyutlu drone uçuşunu simüle eden, anlık telemetri (hız, irtifa, yön) ve dinamik kamera takip modları sunan interaktif CBS simülasyonu.
 
 ---
 
 ## 🌟 Öne Çıkan Özellikler
 
-* 🌍 **CesiumJS 3D Sanal Yer Küre Motoru:** Dünyayı 3 boyutlu olarak render eder. Dağlar, vadiler ve binalar gibi coğrafi detaylar Cesium 3D Tiles ve arazi (terrain) servisleri ile haritaya yansıtılır.
-* 🛸 **3D GLB Model Yükleme (`CesiumDrone.glb`):** Uygulama, kök dizinde bulunan detaylı bir drone 3D modelini (gLTF/GLB formatında) harita üzerinde doğru ölçekte ve açıda konumlandırır.
-* 📈 **Smooth Path Uçuş Rota Animasyonu:** Uçuş rotası (enlem, boylam, yükseklik koordinatları) boyunca drone'un pürüzsüz hareket etmesini sağlayan Lagrange/Bezier benzeri eğrisel rota interpolasyonları.
-* 🖥️ **Canlı Telemetri HUD (Heads-Up Display) Paneli:**
-  * **İrtifa (Altitude):** Deniz seviyesinden yükseklik.
-  * **Hız (Speed):** Anlık hareket sürati (knot/km/h cinsinden).
-  * **Batarya Durumu:** Yüzdesel batarya tüketim göstergesi.
-  * **Bağlantı Kalitesi (RSSI):** Kumanda sinyal gücü simülasyonu.
-* 🛠️ **Webpack 5 & Cesium Asset Yönetimi:** Cesium'un Web Workers, CSS ve statik dosyalarının tarayıcıda optimize çalışmasını sağlayan özel Webpack konfigürasyonu.
+- 🌐 **3 Boyutlu Küresel Harita (CesiumJS 3D Globe):** Yüksek çözünürlüklü uydu görüntüleri ve gerçek dünya arazi yükseltisi (terrain) üzerinde simülasyon.
+- 🚁 **3D Drone Modeli & Rota Takibi:** Özel `.glb` 3D drone modelinin arazi koordinatları (`points.json`) boyunca pürüzsüz interpolasyon ile uçuş yapması.
+- 📟 **Canlı Uçuş Telemetrisi Paneli:** Anlık yükseklik (irtifa), uçuş hızı, koordinat konumu ve pusula yönü bilgileri (`ui-controller.js`).
+- 🎥 **Çoklu Kamera Takip Modları:**
+  - *Takip Kamerası (Chase Cam):* Drone arkasından birinci şahıs uçuş hissi.
+  - *Serbest Kamera (Free Cam):* Kullanıcının haritada serbestçe dolaşabilmesi.
+  - *Kuşbakışı (Top-Down):* Rota genel görünümü.
+- ⚡ **Optimize Webpack 5 Yapılandırması:** CesiumJS statik asset'lerini ve worker'larını sorunsuz paketleyen modern derleyici yapısı.
 
 ---
 
-## 🏗️ Simülasyon ve Derleme Akışı
+## 🏗️ Mimari & Simülasyon Akışı
 
-```
-[ Cesium Ion Token ] ──► [ 3D Dünya Küresi (Tiles & Terrain) ]
-                                      │
-                                      ▼
-[ CesiumDrone.glb ] ──► [ Rota Koordinatları (Interpolated Path) ]
-                                      │
-                                      ▼
-[ Webpack 5 Build ] ──► [ Telemetri HUD Paneli ] ──► [ Web Tarayıcı (60 FPS) ]
+```mermaid
+graph TD
+    Waypoints[(points.json: Koordinatlar & İrtifa)] --> MainEngine[main.js: Cesium Viewer & Path Interpolation]
+    Model[(CesiumDrone.glb: 3D Model)] --> MainEngine
+    MainEngine --> UI[ui-controller.js: Telemetri HUD & Kamera Kontrolleri]
+    MainEngine --> CesiumCanvas[Cesium 3D WebGL Canvas View]
 ```
 
 ---
 
-## 🛠️ Teknoloji Stack
+## 🚀 Hızlı Başlangıç
 
-* **3D Grafik Motoru:** CesiumJS v1.120+ (WebGL tabanlı 3D CBS motoru).
-* **Modül Paketleyici:** Webpack 5, Webpack CLI, Webpack Dev Server.
-* **Webpack Eklentileri:** `copy-webpack-plugin` (Cesium kütüphanesinin statik varlıklarını ve Web Worker'larını kopyalar), `dotenv-webpack`.
-* **Dağıtım Pipeline:** gh-pages.
+### Gereksinimler
+- **Node.js**: v16.0 veya üstü
+- **Cesium Ion Access Token** ([Cesium Ion](https://ion.cesium.com/)'dan temin edilebilir)
 
----
+### Kurulum
 
-## 📂 Proje Klasör Yapısı
-
-```
-cesium-drone.github.io/
-├── src/
-│   ├── index.js            # Cesium Viewer kurulumu, GLB model yükleme ve telemetri döngüsü
-│   └── styles.css          # Telemetri HUD panelinin şık CSS yerleşimi
-├── dist/                   # Webpack tarafından derlenen statik dosyalar
-├── CesiumDrone.glb         # Harita üzerinde hareket eden 3D drone mesh modeli
-├── webpack.config.js       # Cesium static asset kopyalama kurallarını içeren paketleyici ayarları
-└── package.json            # gh-pages deploy scriptleri ve bağımlılıklar
-```
-
----
-
-## 🚀 Kurulum ve Yerel Çalıştırma
-
-### 1. Bağımlılıkları Yükleyin
 ```bash
 git clone https://github.com/yucel-gumus/cesium-drone.github.io.git
 cd cesium-drone.github.io
+
 npm install
 ```
 
-### 2. Cesium Ion Token Ayarı (`.env`)
-Cesium harita servislerinin yüklenmesi için ücretsiz bir Cesium Ion anahtarına ihtiyacınız vardır.
-1. [Cesium Ion](https://cesium.com/ion/) adresinden ücretsiz üye olup token alın.
-2. Proje kök dizininde `.env` dosyası oluşturun ve ekleyin:
-   ```env
-   CESIUM_ION_ACCESS_TOKEN=your_cesium_ion_token_here
-   ```
+### Ortam Değişkenleri (`.env`)
 
-### 3. Uygulamayı Başlatın
+```env
+CESIUM_ION_TOKEN=your_cesium_ion_token_here
+```
+
+### Çalıştırma
+
 ```bash
 npm start
 ```
-Uygulama tarayıcınızda otomatik olarak açılacaktır (varsayılan: `http://localhost:8080`).
 
-### 4. GitHub Pages Dağıtımı (Deploy)
-```bash
-npm run deploy
+Uygulama varsayılan olarak `http://localhost:8080` adresinde açılacaktır.
+
+---
+
+## 📂 Proje Dizin Yapısı
+
+```
+cesium-drone.github.io/
+├── CesiumDrone.glb                 # 3D Drone modeli
+├── webpack.config.js               # Webpack Cesium yapılandırması
+├── package.json
+├── public/
+│   └── points.json                 # Uçuş rota noktaları ve koordinatları
+└── src/
+    ├── index.html                  # Ana sayfa ve HUD katmanı
+    ├── main.js                     # CesiumJS simülasyon başlatıcı
+    ├── ui-controller.js            # Telemetri ve buton kontrolleri
+    ├── config.js                   # Simülasyon sabitleri ve token
+    └── style.css                   # HUD stilleri
 ```
 
 ---
 
-## 🔗 Canlı Bağlantılar
-* **Canlı Demo:** [https://yucel-gumus.github.io/cesium-drone.github.io/](https://yucel-gumus.github.io/cesium-drone.github.io/)
-* **Geliştirici GitHub:** [https://github.com/yucel-gumus](https://github.com/yucel-gumus)
+## 📄 Lisans
+Bu proje [MIT Lisansı](LICENSE) ile lisanslanmıştır.
+
+---
+
+## 👨‍💻 Geliştirici & İletişim
+
+**Yücel Gümüş** - Full Stack Developer
+
+- 🌐 **Web Sitesi / Portfolyo:** [yucelgumus.dev](https://www.yucelgumus.dev/)
+- 💼 **LinkedIn:** [linkedin.com/in/yucel-gumus](https://www.linkedin.com/in/yucel-gumus/)
+- 🐙 **GitHub:** [@yucel-gumus](https://github.com/yucel-gumus)
+
+<p align="left">
+  <a href="https://www.yucelgumus.dev/" target="_blank" rel="noopener noreferrer">
+    <img src="https://img.shields.io/badge/Developed%20by-Yücel%20Gümüş-blue?style=for-the-badge&logo=google-chrome&logoColor=white" alt="Yücel Gümüş Portfolio" />
+  </a>
+</p>
