@@ -1,68 +1,374 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="tr">
-
-<head>
-    <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Drone Simülasyon Sistemi</title>
-  <link rel="icon" type="image/png" href="https://img.icons8.com/fluency/48/drone.png">
-  <script src="https://cesium.com/downloads/cesiumjs/releases/1.129/Build/Cesium/Cesium.js"></script>
-  <link href="https://cesium.com/downloads/cesiumjs/releases/1.129/Build/Cesium/Widgets/widgets.css" rel="stylesheet">
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
-  <link rel="stylesheet" href="style.css">
-</head>
-
-<body>
-    <div class="app-container">
-        <div class="side-panel">
-            <div class="panel-header">
-                <img src="https://img.icons8.com/fluency/96/drone.png" alt="Drone İkonu" class="logo">
-                <h1 class="app-title">Drone Kontrol Sistemi</h1>
-            </div>
-            <div class="control-panel">
-                <h2 class="section-title"><i class="fas fa-gamepad"></i> Kontroller</h2>
-                <div class="button-group">
-                    <button id="startButton" class="control-button primary">
-                        <i class="fas fa-play"></i>
-                        <span>Keşif Uçuşu Başlat</span>
-                    </button>              
-                </div>
-            </div>
-            <div class="info-panel">
-                <h2 class="section-title"><i class="fas fa-info-circle"></i> Drone Durumu</h2>
-                <div class="status-grid">
-                    <div class="status-item">
-                        <i class="fas fa-signal"></i>
-                        <span class="status-label">Bağlantı:</span>
-                        <span class="status-value" id="connectionStatus">Çevrim Dışı</span>
-                    </div>
-                    <div class="status-item">
-                        <i class="fas fa-battery-three-quarters"></i>
-                        <span class="status-label">Batarya:</span>
-                        <span class="status-value" id="batteryStatus">100%</span>
-                    </div>
-                    <div class="status-item">
-                        <i class="fas fa-altitude"></i>
-                        <span class="status-label">Yükseklik:</span>
-                        <span class="status-value" id="altitudeStatus">0m</span>
-                    </div>
-                    <div class="status-item">
-                        <i class="fas fa-tachometer-alt"></i>
-                        <span class="status-label">Hız:</span>
-                        <span class="status-value" id="speedStatus">0 km/s</span>
-                    </div>
-                </div>
-            </div>
-            <div class="developer-credit" style="margin-top: auto; padding-top: 1rem; border-top: 1px solid rgba(255,255,255,0.1); font-size: 0.8rem; text-align: center; color: #a0aec0;">
-                <p>Geliştirici: <a href="https://www.yucelgumus.dev/" target="_blank" rel="noopener noreferrer" style="color: #63b3ed; text-decoration: underline; font-weight: 600;">Yücel Gümüş</a></p>
-            </div>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#101b20" />
+    <meta
+      name="description"
+      content="Uzungöl üzerinde arazi yüksekliğini hesaba katan 3D drone keşif uçuşu simülasyonu."
+    />
+    <title>Uzungöl · Drone Keşfi</title>
+    <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
+    <link rel="stylesheet" href="./cesium/Widgets/widgets.css" />
+    <script>
+      window.CESIUM_BASE_URL = "./cesium/";
+    </script>
+    <script defer src="./cesium/Cesium.js"></script>
+    <script defer src="./bundle.js"></script>
+  </head>
+  <body>
+    <div class="app">
+      <aside class="sidebar">
+        <header class="brand">
+          <span class="brand-mark" aria-hidden="true">⌘</span>
+          <div>
+            <p class="eyebrow">6-DOF · DİNAMİK UÇUŞ SİMÜLASYONU</p>
+            <h1>Uzungöl <span>Keşif</span></h1>
+          </div>
+        </header>
+        <div class="location">
+          <span class="live-dot"></span> Çaykara, Trabzon
+          <span>40.62° K · 40.30° D</span>
         </div>
-        <div class="main-content">
-            <div id="cesiumContainer"></div>
+        <section class="mission-card">
+          <div class="section-heading">
+            <h2>Keşif görevi</h2>
+            <span class="tag">OTONOM</span>
+          </div>
+          <p class="description">
+            Kıyıdan kalkış. Göl ve çevresinde keşif. Aynı noktaya kontrollü
+            iniş.
+          </p>
+          <ol class="phases" aria-label="Uçuş aşamaları">
+            <li data-phase="takeoff"><span>01</span>Kalkış</li>
+            <li data-phase="survey"><span>02</span>Keşif</li>
+            <li data-phase="return"><span>03</span>Dönüş</li>
+            <li data-phase="landing"><span>04</span>İniş</li>
+          </ol>
+          <div class="plan-stats">
+            <div>
+              <span>Rota uzunluğu</span><strong id="routeDistance">—</strong>
+            </div>
+            <div>
+              <span>Uçuş süresi</span><strong id="routeDuration">—</strong>
+            </div>
+          </div>
+          <label class="field-label" for="clearance"
+            >Hedef arazi açıklığı <span>metre</span></label
+          >
+          <div class="altitude-control">
+            <input
+              id="clearance"
+              type="number"
+              min="30"
+              max="150"
+              step="10"
+              value="70"
+            /><button id="planButton" class="button secondary">
+              Rotayı hesapla
+            </button>
+          </div>
+          <p class="field-note">
+            Yuvarlatılmış rota üzerinde 10 m arazi + 5 m takip payı.
+          </p>
+          <div class="environment-controls">
+            <label for="massInput"
+              >Kütle · kg<input
+                id="massInput"
+                type="number"
+                min="1"
+                max="3"
+                step="0.1"
+                value="2"
+            /></label>
+            <label for="windInput"
+              >Rüzgâr · m/s<input
+                id="windInput"
+                type="number"
+                min="0"
+                max="6"
+                step="0.5"
+                value="2"
+            /></label>
+          </div>
+          <p class="field-note">
+            Genel X quad · D-KD rüzgârı ve sentetik hamleler. Değişikliklerden
+            sonra rotayı hesaplayın.
+          </p>
+          <p id="message" class="message" role="status" aria-live="polite">
+            Arazi ve uçuş planı hazırlanıyor…
+          </p>
+          <button id="startButton" class="button primary" disabled>
+            <span aria-hidden="true">↗</span> Keşif uçuşunu başlat
+          </button>
+          <div class="transport">
+            <button id="pauseButton" class="button secondary" disabled>
+              Duraklat</button
+            ><button id="resetButton" class="button secondary" disabled>
+              Başa al
+            </button>
+          </div>
+        </section>
+        <section class="telemetry-panel">
+          <div class="section-heading">
+            <h2>Canlı telemetri</h2>
+            <span id="connectionStatus" class="status">Hazırlanıyor</span>
+          </div>
+          <div class="telemetry-grid">
+            <div class="metric emphasis">
+              <span>Yerden yükseklik · AGL</span
+              ><strong id="altitudeStatus">—</strong>
+            </div>
+            <div class="metric emphasis">
+              <span>Yer hızı</span><strong id="speedStatus">—</strong>
+            </div>
+            <div class="metric">
+              <span
+                title="WGS84 elipsoidi üzerindeki yükseklik; deniz seviyesi yüksekliği değildir."
+                >Elipsoit irtifası ⓘ</span
+              ><strong id="absoluteAltitude">—</strong>
+            </div>
+            <div class="metric">
+              <span>Kalkışa göre</span><strong id="relativeAltitude">—</strong>
+            </div>
+            <div class="metric">
+              <span>Dikey hız</span><strong id="verticalSpeed">—</strong>
+            </div>
+            <div class="metric">
+              <span>Yön · kuzey 0°</span><strong id="headingStatus">—</strong>
+            </div>
+            <div class="metric">
+              <span>Yatış · roll</span><strong id="rollStatus">—</strong>
+            </div>
+            <div class="metric">
+              <span>Tangaj · pitch</span><strong id="pitchStatus">—</strong>
+            </div>
+            <div class="metric">
+              <span>Gövde açısal hızı</span><strong id="rateStatus">—</strong>
+            </div>
+            <div class="metric">
+              <span>Toplam motor itkisi</span
+              ><strong id="thrustStatus">—</strong>
+            </div>
+            <div class="metric">
+              <span>Rota takip hatası</span
+              ><strong id="trackingStatus">—</strong>
+            </div>
+            <div class="metric">
+              <span>Anlık rüzgâr</span><strong id="windStatus">—</strong>
+            </div>
+          </div>
+          <div class="motor-panel">
+            <span>MOTOR DEVİRLERİ · RPM</span>
+            <div id="motorStatus">—</div>
+          </div>
+          <div class="coordinates">
+            <span id="coordinates">—</span
+            ><span id="terrainStatus">ARAZİ BEKLENİYOR</span>
+          </div>
+          <button
+            id="exportButton"
+            class="button secondary log-export"
+            disabled
+          >
+            Uçuş kaydını indir · CSV
+          </button>
+        </section>
+        <details class="settings" id="physicsDetails">
+          <summary>Fizik modeli ve uçuş doğrulaması</summary>
+          <div id="physicsSummary">240 Hz rijit cisim çözümü hazırlanıyor.</div>
+        </details>
+        <details class="settings">
+          <summary>Harita erişim ayarı</summary>
+          <p>
+            Cesium ion token arazi yüksekliklerini yükler. Token bu sekmenin
+            oturumunda saklanır.
+          </p>
+          <label for="ionToken">Cesium ion erişim tokenı</label
+          ><input
+            id="ionToken"
+            type="password"
+            placeholder="Token girin"
+            autocomplete="off"
+          /><button id="tokenButton" class="button secondary">
+            Token ile yeniden yükle
+          </button>
+        </details>
+        <footer>
+          <p>
+            Genel mühendislik modeli. Bina/ağaç çarpışmaları ve gerçek drone
+            ölçümleriyle kalibrasyon henüz yoktur.
+          </p>
+          <a
+            href="https://www.yucelgumus.dev/"
+            target="_blank"
+            rel="noopener noreferrer"
+            >Yücel Gümüş <span>↗</span></a
+          >
+        </footer>
+      </aside>
+      <main class="map-area" aria-label="Uzungöl üç boyutlu haritası">
+        <div id="cesiumContainer"></div>
+        <div class="map-heading">
+          <span class="map-badge">3D KEŞİF</span>
+          <div>
+            <strong>Uzungöl</strong><span>Doğu Karadeniz, Türkiye</span>
+          </div>
         </div>
+        <nav class="camera-controls" aria-label="Kamera görünümü">
+          <div class="camera-mode-buttons">
+            <button id="overviewButton" class="active" aria-pressed="true">
+              Rota</button
+            ><button id="followButton" aria-pressed="false">
+              Drone takibi
+            </button>
+          </div>
+          <div id="followZoomControls" class="follow-zoom" hidden>
+            <div class="follow-views" role="group" aria-label="Drone takip açısı">
+              <button type="button" data-follow-view="rear" class="active" aria-pressed="true">Arkadan</button>
+              <button type="button" data-follow-view="front" aria-pressed="false">Önden</button>
+              <button type="button" data-follow-view="diagonal" aria-pressed="false">Çapraz</button>
+              <button type="button" data-follow-view="left" aria-pressed="false">Sol yandan</button>
+              <button type="button" data-follow-view="right" aria-pressed="false">Sağ yandan</button>
+              <button type="button" data-follow-view="top" aria-pressed="false">Üstten</button>
+            </div>
+            <div class="zoom-label">
+              <label for="followDistance">Takip mesafesi</label
+              ><output id="followDistanceValue" for="followDistance"
+                >8.0 m</output
+              >
+            </div>
+            <div class="zoom-actions">
+              <button
+                id="zoomInButton"
+                type="button"
+                aria-label="Drone'a yaklaş"
+                title="Drone'a yaklaş"
+              >
+                +
+              </button>
+              <input
+                id="followDistance"
+                type="range"
+                min="1.2"
+                max="80"
+                step="0.1"
+                value="8"
+                aria-label="Drone takip mesafesi"
+              />
+              <button
+                id="zoomOutButton"
+                type="button"
+                aria-label="Drone'dan uzaklaş"
+                title="Drone'dan uzaklaş"
+              >
+                −
+              </button>
+            </div>
+          </div>
+        </nav>
+        <div id="mapError" class="map-error" role="alert" hidden></div>
+        <div class="attitude-instrument" aria-label="Gövde yönelimi">
+          <svg
+            viewBox="0 0 120 140"
+            role="img"
+            aria-label="Yapay ufuk: gerçek gövde yatışı ve tangajı"
+          >
+            <defs>
+              <clipPath id="horizonClip">
+                <circle cx="60" cy="57" r="45" />
+              </clipPath>
+            </defs>
+            <g clip-path="url(#horizonClip)">
+              <g id="horizonGroup">
+                <rect
+                  x="-150"
+                  y="-200"
+                  width="420"
+                  height="257"
+                  fill="#376b82"
+                />
+                <rect x="-150" y="57" width="420" height="300" fill="#6b6650" />
+                <path
+                  d="M-100 57H220 M42 42H78 M49 27H71 M42 72H78 M49 87H71"
+                  stroke="#f2f7ed"
+                  stroke-width="1.5"
+                  fill="none"
+                />
+              </g>
+            </g>
+            <circle
+              cx="60"
+              cy="57"
+              r="46"
+              fill="none"
+              stroke="#71888e"
+              stroke-width="2"
+            />
+            <path
+              d="M25 57H48L53 62H67L72 57H95 M55 9L60 16L65 9"
+              stroke="#b5ed8b"
+              stroke-width="3"
+              fill="none"
+            />
+            <text
+              id="horizonHeading"
+              x="60"
+              y="122"
+              text-anchor="middle"
+              fill="#edf5f3"
+              font-size="12"
+            >
+              —
+            </text>
+            <text
+              x="60"
+              y="137"
+              text-anchor="middle"
+              fill="#9caeb4"
+              font-size="7"
+            >
+              GÖVDE · 240 Hz FİZİK
+            </text>
+          </svg>
+        </div>
+        <div class="map-legend">
+          <span class="legend-line"></span> Rota referansı
+          <span class="legend-line actual"></span> Gerçekleşen iz
+          <span class="legend-home">H</span> Kalkış / iniş
+        </div>
+        <div class="flight-bar">
+          <div class="flight-bar-top">
+            <div>
+              <span class="live-dot"></span
+              ><strong id="flightPhase">Rota hazırlanıyor</strong>
+            </div>
+            <span id="flightTime">00:00 / —</span>
+          </div>
+          <label class="sr-only" for="flightProgress">Uçuş zamanını seç</label
+          ><input
+            id="flightProgress"
+            type="range"
+            min="0"
+            max="1000"
+            value="0"
+            disabled
+          />
+          <div class="flight-bar-bottom">
+            <span id="flightDistance">0 m kat edildi</span
+            ><label for="playbackSpeed"
+              >Oynatma
+              <select id="playbackSpeed">
+                <option value="1">1× gerçek süre</option>
+                <option value="2">2×</option>
+                <option value="5">5×</option>
+                <option value="10">10×</option>
+              </select></label
+            >
+          </div>
+        </div>
+      </main>
     </div>
-
-  <script src="bundle.js"></script>
-</body>
-
+  </body>
 </html>

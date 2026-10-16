@@ -3,6 +3,8 @@ node_modules/
 .DS_Store
 /dist
 /.env*
+!/.env.example
 src/config.js
 .git.backup
 *.backup
+artifacts/
