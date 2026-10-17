@@ -1,4 +1,4 @@
-<!doctype html><html lang=tr><head><meta charset=UTF-8><meta name=viewport content="width=device-width,initial-scale=1"><meta name=theme-color content=#101b20><meta name=description content="Uzungöl üzerinde arazi yüksekliğini hesaba katan 3D drone keşif uçuşu simülasyonu."><title>Uzungöl · Drone Keşfi</title><link rel=icon type=image/svg+xml href=./favicon.svg><link rel=stylesheet href=./cesium/Widgets/widgets.css><script>window.CESIUM_BASE_URL="./cesium/";</script><script defer src=./cesium/Cesium.js></script><script defer src=./bundle.js></script></head><body>
+<!doctype html><html lang=tr><head><meta charset=UTF-8><meta name=viewport content="width=device-width,initial-scale=1"><meta name=theme-color content=#101b20><meta name=description content="Uzungöl üzerinde araziyi izleyen, kamera yükü, batarya ve GNSS navigasyonu modellenmiş profesyonel drone keşif uçuşu simülasyonu."><title>Uzungöl · Drone Keşfi</title><link rel=icon type=image/svg+xml href=./favicon.svg><link rel=stylesheet href=./cesium/Widgets/widgets.css><script>window.CESIUM_BASE_URL="./cesium/";</script><script defer src=./cesium/Cesium.js></script><script defer src=./bundle.js></script></head><body>
     <div class=app>
       <aside class=sidebar>
         <header class=brand>
@@ -18,8 +18,8 @@
             <span class=tag>OTONOM</span>
           </div>
           <p class=description>
-            Kıyıdan kalkış. Göl ve çevresinde keşif. Aynı noktaya kontrollü
-            iniş.
+            Kıyıdan kalkış, sabit AGL'de araziyi izleyerek göl çevresinde
+            fotoğraflı keşif, aynı noktaya otonom iniş.
           </p>
           <ol class=phases aria-label="Uçuş aşamaları">
             <li data-phase=takeoff><span>01</span>Kalkış</li>
@@ -34,25 +34,45 @@
             <div>
               <span>Uçuş süresi</span><strong id=routeDuration>—</strong>
             </div>
+            <div>
+              <span>Fotoğraf · GSD</span><strong id=routePhotos>—</strong>
+            </div>
+            <div>
+              <span>İnişte batarya</span><strong id=routeBattery>—</strong>
+            </div>
           </div>
-          <label class=field-label for=clearance>Hedef arazi açıklığı <span>metre</span></label>
+          <label class=field-label for=aglInput>Hedef yükseklik · AGL <span>metre</span></label>
           <div class=altitude-control>
-            <input id=clearance type=number min=30 max=150 step=10 value=70><button id=planButton class="button secondary">
-              Rotayı hesapla
+            <input id=aglInput type=number min=30 max=120 step=5 value=80><button id=planButton class="button secondary">
+              Görevi planla
             </button>
           </div>
           <p class=field-note>
-            Yuvarlatılmış rota üzerinde 10 m arazi + 5 m takip payı.
+            Koridorun en yüksek zemininden yükseklik; drone araziyi izler.
+            Yasal tavan 120 m AGL.
           </p>
           <div class=environment-controls>
-            <label for=massInput>Kütle · kg<input id=massInput type=number min=1 max=3 step=0.1 value=2></label>
+            <label for=massInput title="Batarya dahil kalkış kütlesi. Enerji tüketimi kütleyle yaklaşık m^1,5 oranında artar.">Kalkış kütlesi · kg<input id=massInput type=number min=1 max=3 step=0.1 value=2></label>
             <label for=windInput title="Ortalama rüzgâr hızı; MIL-F-8785C Dryden türbülansı (σ ≈ 0,14 × hız, seçilen tohum) üzerine eklenir. Üst sınır 3,5 m/s: 2 kg profilde 25° yatış / 4 m/s² ivme sınırının hamlelerle birlikte takip hatasını 1 m altında tuttuğu en yüksek değer; daha hafif gövdelerde yetki daha erken biter.">Rüzgâr · m/s<input id=windInput type=number min=0 max=3.5 step=0.5 value=2></label>
             <label for=seedInput title="Dryden türbülansının rastgele sayı tohumu (0–4294967295). Aynı tohum ve girdiler bit düzeyinde aynı hamle dizisini verir; farklı tohum farklı bir hamle dizisi üretir.">Tohum<input id=seedInput type=number min=0 max=4294967295 step=1 value=1></label>
             <label for=turbulenceInput title="Kapalıyken yalnızca sabit ortalama rüzgâr uygulanır; tohum kullanılmaz.">Türbülans<span class=toggle><input id=turbulenceInput type=checkbox checked><span>Dryden hamleleri</span></span></label>
           </div>
+          <div class="environment-controls payload-controls">
+            <label for=gimbalInput title="Üç eksenli stabilize gimbalın eğimi. Nadir haritalama için −90°, eğik keşif görüntüsü için −45°.">Gimbal<select id=gimbalInput>
+                <option value=-90 selected>−90° nadir</option>
+                <option value=-70>−70°</option>
+                <option value=-60>−60°</option>
+                <option value=-45>−45° eğik</option>
+              </select></label>
+            <label for=overlapInput title="Ardışık fotoğraflar arasındaki ileri bindirme; fotogrametri için %70–80 tipiktir. Tetik mesafesini belirler.">İleri bindirme · %<input id=overlapInput type=number min=60 max=90 step=5 value=80></label>
+            <label for=gnssInput title="RTK düzeltmeli GNSS santimetre, standart GNSS metre düzeyinde konum verir. Kontrolcü bu navigasyon çözümüyle uçar.">Navigasyon<select id=gnssInput>
+                <option value=rtk selected>RTK GNSS</option>
+                <option value=standard>Standart GNSS</option>
+              </select></label>
+          </div>
           <p class=field-note>
-            Genel X quad · D-KD ortalama rüzgârı ve Dryden türbülansı.
-            Değişikliklerden sonra rotayı hesaplayın.
+            Genel 2 kg X quad · 6S 6000 mAh · 1″ 20 MP kamera · D-KD rüzgârı ve
+            Dryden türbülansı. Değişikliklerden sonra görevi planlayın.
           </p>
           <p id=message class=message role=status aria-live=polite>
             Arazi ve uçuş planı hazırlanıyor…
@@ -66,6 +86,15 @@
               Başa al
             </button>
           </div>
+        </section>
+        <section class=checklist-panel>
+          <div class=section-heading>
+            <h2>Uçuş öncesi kontrol</h2>
+            <span id=checklistStatus class=status>Bekleniyor</span>
+          </div>
+          <ul id=checklist class=checklist aria-live=polite>
+            <li class=pending>Görev planlanınca kontroller burada görünür.</li>
+          </ul>
         </section>
         <section class=telemetry-panel>
           <div class=section-heading>
@@ -112,6 +141,27 @@
             <div class=metric>
               <span>Anlık rüzgâr</span><strong id=windStatus>—</strong>
             </div>
+            <div class=metric>
+              <span>Fotoğraf</span><strong id=photoStatus>—</strong>
+            </div>
+            <div class=metric>
+              <span title="Görüntü merkezinde bir pikselin yerdeki karşılığı (ground sampling distance).">Anlık GSD ⓘ</span><strong id=gsdStatus>—</strong>
+            </div>
+            <div class=metric>
+              <span>GNSS</span><strong id=gnssStatus>—</strong>
+            </div>
+            <div class=metric>
+              <span title="Navigasyon filtresinin kendi yatay konum belirsizliği (1σ) ve gerçek kestirim hatası.">Konum belirsizliği ⓘ</span><strong id=navStatus>—</strong>
+            </div>
+          </div>
+          <div class=battery-panel>
+            <div class=battery-heading>
+              <span>BATARYA · 6S 6000 mAh</span><strong id=batteryPercent>—</strong>
+            </div>
+            <div class=battery-bar aria-hidden=true>
+              <span id=batteryFill></span><i id=batteryReserve></i>
+            </div>
+            <div id=batteryStatus class=battery-status>—</div>
           </div>
           <div class=motor-panel>
             <span>MOTOR DEVİRLERİ · RPM</span>
@@ -120,9 +170,29 @@
           <div class=coordinates>
             <span id=coordinates>—</span><span id=terrainStatus>ARAZİ BEKLENİYOR</span>
           </div>
-          <button id=exportButton class="button secondary log-export" disabled>
-            Uçuş kaydını indir · CSV
-          </button>
+          <div class=export-row role=group aria-label="Dışa aktar">
+            <button id=exportCsvButton class="button secondary" disabled>
+              CSV
+            </button>
+            <button id=exportKmlButton class="button secondary" disabled>
+              KML
+            </button>
+            <button id=exportPlanButton class="button secondary" disabled>
+              QGC .plan
+            </button>
+            <button id=exportGeojsonButton class="button secondary" disabled>
+              GeoJSON
+            </button>
+          </div>
+        </section>
+        <section class=events-panel>
+          <div class=section-heading>
+            <h2>Uçuş günlüğü</h2>
+            <span class=status>tıkla · zamana git</span>
+          </div>
+          <ol id=eventLog class=event-log>
+            <li class=pending>Görev planlanınca olaylar burada görünür.</li>
+          </ol>
         </section>
         <details class=settings id=physicsDetails>
           <summary>Fizik modeli ve uçuş doğrulaması</summary>
@@ -140,8 +210,8 @@
         </details>
         <footer>
           <p>
-            Genel mühendislik modeli. Bina/ağaç çarpışmaları ve gerçek drone
-            ölçümleriyle kalibrasyon henüz yoktur.
+            Genel mühendislik modeli; ölçülmüş bir drone değildir. Bina/ağaç
+            engelleri ve uçuş verisiyle kalibrasyon henüz yoktur.
           </p>
           <a href=https://www.yucelgumus.dev/ target=_blank rel="noopener noreferrer">Yücel Gümüş <span>↗</span></a>
         </footer>
@@ -158,7 +228,8 @@
           <div class=camera-mode-buttons>
             <button id=overviewButton class=active aria-pressed=true>
               Rota</button><button id=followButton aria-pressed=false>
-              Drone takibi
+              Drone takibi</button><button id=gimbalButton aria-pressed=false>
+              Kamera
             </button>
           </div>
           <div id=followZoomControls class=follow-zoom hidden>
@@ -185,6 +256,14 @@
           </div>
         </nav>
         <div id=mapError class=map-error role=alert hidden></div>
+        <div id=gimbalHud class=gimbal-hud hidden aria-hidden=true>
+          <div class=hud-frame></div>
+          <div class=hud-cross></div>
+          <div class=hud-top>
+            <span id=hudRec class=hud-rec>● REC</span><span id=hudPhoto>IMG —</span>
+          </div>
+          <div id=hudInfo class=hud-info>—</div>
+        </div>
         <div class=attitude-instrument aria-label="Gövde yönelimi">
           <svg viewBox="0 0 120 140" role=img aria-label="Yapay ufuk: gerçek gövde yatışı ve tangajı">
             <defs>
@@ -210,9 +289,7 @@
           </svg>
         </div>
         <div class=map-legend>
-          <span class=legend-line></span> Rota referansı
-          <span class="legend-line actual"></span> Gerçekleşen iz
-          <span class=legend-home>H</span> Kalkış / iniş
+          <span class=legend-item><span class=legend-line></span> Rota referansı</span><span class=legend-item><span class="legend-line actual"></span> Gerçekleşen iz</span><span class=legend-item><span class=legend-footprint></span> Görüntü izi</span><span class=legend-item><span class=legend-home>H</span> Kalkış / iniş</span>
         </div>
         <div class=flight-bar>
           <div class=flight-bar-top>
