@@ -3,7 +3,6 @@ const PHASES = {
   arming: "Motorlar hazırlanıyor",
   takeoff: "Dikey kalkış",
   survey: "Keşif uçuşu",
-  turn: "Keşif · yönlenme",
   return: "Kalkış noktasına dönüş",
   landing: "Kontrollü iniş",
   settle: "İniş öncesi konum tutma",
@@ -35,7 +34,8 @@ export default class DroneUIController {
       if (
         e.clearance.reportValidity() &&
         e.massInput.reportValidity() &&
-        e.windInput.reportValidity()
+        e.windInput.reportValidity() &&
+        e.seedInput.reportValidity()
       )
         handlers.plan(Number(e.clearance.value));
     });
@@ -89,6 +89,8 @@ export default class DroneUIController {
     e.clearance.disabled = busy || active;
     e.massInput.disabled = busy || active;
     e.windInput.disabled = busy || active;
+    e.seedInput.disabled = busy || active;
+    e.turbulenceInput.disabled = busy || active;
     e.planButton.disabled = busy || active;
     e.tokenButton.disabled = busy || active;
     e.ionToken.disabled = busy || active;
@@ -118,9 +120,10 @@ export default class DroneUIController {
     );
     this.elements.routeDuration.textContent = formatTime(mission.duration);
     this.elements.terrainStatus.textContent = `${mission.samples.length} ARAZİ ÖRNEĞİ · WGS84`;
-    const m = mission.simulation.metrics,
-      c = mission.simulation.airframe;
-    this.elements.physicsSummary.innerHTML = `<dl><dt>Çözüm</dt><dd>RK4 · ${c.physicsHz} Hz / kontrol ${c.controlHz} Hz</dd><dt>Kütle / kol</dt><dd>${c.mass.toFixed(1)} kg / ${(c.armLength * 100).toFixed(0)} cm</dd><dt>Atalet Ixx / Iyy / Izz</dt><dd>${c.inertia.map((x) => x.toFixed(3)).join(" / ")} kg·m²</dd><dt>Motor gecikmesi</dt><dd>${(c.motorTimeConstant * 1000).toFixed(0)} ms</dd><dt>Hava yoğunluğu</dt><dd>${c.airDensity.toFixed(2)} kg/m³</dd><dt>Azami rotor / yatış</dt><dd>${Math.round((c.maxRotorSpeed * 60) / (2 * Math.PI))} rpm / ${((c.maxTilt * 180) / Math.PI).toFixed(0)}°</dd><dt>En büyük takip hatası</dt><dd>${m.maxTrackingError.toFixed(2)} m</dd><dt>İniş konum hatası</dt><dd>${(m.landingError * 100).toFixed(1)} cm</dd><dt>Temas alçalma hızı</dt><dd>${m.contactSpeed.toFixed(2)} m/s</dd><dt>Motor doygunluğu</dt><dd>${m.saturationSeconds.toFixed(2)} s</dd></dl><p>Sentetik rüzgâr, sabit hava yoğunluğu, ideal durum bilgisi ve noktasal zemin teması. Gerçek araç için tanımlanmış katsayılar veya PX4 SITL değildir.</p>`;
+    const s = mission.simulation,
+      m = s.metrics,
+      c = s.airframe;
+    this.elements.physicsSummary.innerHTML = `<dl><dt>Çözüm</dt><dd>RK4 · ${c.physicsHz} Hz / kontrol ${c.controlHz} Hz</dd><dt>Kütle / kol</dt><dd>${c.mass.toFixed(1)} kg / ${(c.armLength * 100).toFixed(0)} cm</dd><dt>Atalet Ixx / Iyy / Izz</dt><dd>${c.inertia.map((x) => x.toFixed(3)).join(" / ")} kg·m²</dd><dt>Motor gecikmesi</dt><dd>${(c.motorTimeConstant * 1000).toFixed(0)} ms</dd><dt>Hava yoğunluğu</dt><dd>${c.airDensity.toFixed(2)} kg/m³</dd><dt>Azami rotor / yatış</dt><dd>${Math.round((c.maxRotorSpeed * 60) / (2 * Math.PI))} rpm / ${((c.maxTilt * 180) / Math.PI).toFixed(0)}°</dd><dt>Ortalama rüzgâr</dt><dd>${s.wind.toFixed(1)} m/s</dd><dt>Dryden türbülansı</dt><dd>${s.turbulence ? `açık · tohum ${s.seed}` : "kapalı"}</dd><dt>En büyük takip hatası</dt><dd>${m.maxTrackingError.toFixed(2)} m</dd><dt>İniş konum hatası</dt><dd>${(m.landingError * 100).toFixed(1)} cm</dd><dt>Temas alçalma hızı</dt><dd>${m.contactSpeed.toFixed(2)} m/s</dd><dt>Motor doygunluğu</dt><dd>${m.saturationSeconds.toFixed(2)} s</dd></dl><p>MIL-F-8785C Dryden türbülansı, sabit hava yoğunluğu, ideal durum bilgisi ve noktasal zemin teması. Gerçek araç için tanımlanmış katsayılar veya PX4 SITL değildir.</p>`;
   }
 
   setCamera(mode) {
@@ -154,6 +157,9 @@ export default class DroneUIController {
     e.altitudeStatus.textContent = `${sample.agl.toFixed(1)} m`;
     e.speedStatus.textContent = `${(sample.groundSpeed * 3.6).toFixed(1)} km/h`;
     e.absoluteAltitude.textContent = `${sample.position.height.toFixed(1)} m`;
+    e.mslAltitude.textContent = Number.isFinite(sample.mslAltitude)
+      ? `${sample.mslAltitude.toFixed(1)} m`
+      : "—";
     e.relativeAltitude.textContent = `${sample.relativeAltitude.toFixed(1)} m`;
     e.verticalSpeed.textContent = `${sample.verticalSpeed.toFixed(1)} m/s`;
     e.rollStatus.textContent = `${C.Math.toDegrees(sample.roll).toFixed(1)}°`;
@@ -171,7 +177,10 @@ export default class DroneUIController {
       `rotate(${-C.Math.toDegrees(sample.roll)} 60 57) translate(0 ${C.Math.toDegrees(sample.pitch) * 1.3})`,
     );
     e.horizonHeading.textContent = `${Math.round(C.Math.toDegrees(sample.heading)) % 360}° · ${C.Math.toDegrees(sample.roll).toFixed(1)}° roll`;
-    e.coordinates.textContent = `${C.Math.toDegrees(sample.position.latitude).toFixed(6)}° K / ${C.Math.toDegrees(sample.position.longitude).toFixed(6)}° D`;
+    // Hemisphere suffix follows the sign so southern/western routes read right.
+    const lat = C.Math.toDegrees(sample.position.latitude),
+      lon = C.Math.toDegrees(sample.position.longitude);
+    e.coordinates.textContent = `${Math.abs(lat).toFixed(6)}° ${lat >= 0 ? "K" : "G"} / ${Math.abs(lon).toFixed(6)}° ${lon >= 0 ? "D" : "B"}`;
     e.flightPhase.textContent =
       this.state === "paused"
         ? `Duraklatıldı · ${PHASES[phase]}`

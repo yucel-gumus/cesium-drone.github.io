@@ -9,6 +9,8 @@ import {
   attachSimulation,
   evaluateMission,
   validateWaypoints,
+  validateBounds,
+  validateGeoidUndulation,
 } from "../src/flight-planner.mjs";
 import { referenceAt } from "../src/trajectory.mjs";
 import { simulate, STRIDE } from "../src/quadrotor.mjs";
@@ -41,10 +43,64 @@ test("validates region, missing/null coordinates, closed and degenerate routes",
     assert.throws(() =>
       validateWaypoints({ ...data, dronePoints: [bad, ...data.dronePoints] }),
     );
+  // Region limits come from the data file, so messages name no place.
+  assert.throws(
+    () =>
+      validateWaypoints({
+        ...data,
+        dronePoints: [{ longitude: 0, latitude: 0 }, ...data.dronePoints],
+      }),
+    /^Error: Rota noktası 1: rota sınırlarının dışında\.$/,
+  );
   assert.throws(() =>
-    createTerrainRoute(C, { dronePoints: Array(3).fill(data.dronePoints[0]) }),
+    createTerrainRoute(C, {
+      ...data,
+      dronePoints: Array(3).fill(data.dronePoints[0]),
+    }),
   );
   assert.throws(() => createTerrainRoute(C, data, { wind: NaN }));
+});
+
+test("route bounds are mandatory, ordered, on the globe and small enough for one ENU frame", () => {
+  const { bounds } = data;
+  assert.deepEqual(validateBounds(data), bounds);
+  assert.deepEqual(createTerrainRoute(C, data).bounds, bounds);
+  const { bounds: _omitted, ...withoutBounds } = data;
+  assert.throws(() => validateWaypoints(withoutBounds), /bounds/);
+  for (const bad of [
+    null,
+    "40.25,40.35,40.59,40.65",
+    { ...bounds, north: undefined },
+    { ...bounds, east: NaN },
+    { ...bounds, west: bounds.east, east: bounds.west },
+    { ...bounds, south: bounds.north },
+    { ...bounds, west: -181 },
+    { ...bounds, north: 90.5 },
+    { ...bounds, east: bounds.west + 0.51 },
+    { ...bounds, south: bounds.north - 0.6 },
+  ])
+    assert.throws(
+      () => validateWaypoints({ ...data, bounds: bad }),
+      /^Error: Rota (dosyasında bounds|sınırları)/,
+    );
+  // A box at the 0.5° limit is accepted; the same points elsewhere are not.
+  const limit = {
+    ...bounds,
+    east: bounds.west + 0.5,
+    north: bounds.south + 0.5,
+  };
+  assert.equal(validateWaypoints({ ...data, bounds: limit }).length, 18);
+  // 1.1 − 0.6 is 0.5000000000000001 in floating point: still at the limit.
+  const noisy = { west: 0.6, east: 1.1, south: 40, north: 40.4 };
+  assert.deepEqual(validateBounds({ bounds: noisy }), noisy);
+  assert.throws(
+    () =>
+      validateWaypoints({
+        ...data,
+        bounds: { west: 29.0, east: 29.5, south: 41.0, north: 41.5 },
+      }),
+    /rota sınırlarının dışında/,
+  );
 });
 
 test("terrain sampling covers the rounded path and both sides, not the old polygon", () => {
@@ -216,4 +272,45 @@ test("missing terrain blocks planning and service failures propagate", async () 
       bad,
     ),
   );
+});
+
+test("clearance is measured against the corridor's highest sampled ground, not the centre line", () => {
+  const raised = createTerrainRoute(C, data);
+  // Flat centre line with 20 m higher ground on both corridor edges.
+  raised.samples.forEach((p, i) => (p.height = i % 3 === 0 ? 1150 : 1170));
+  const m = buildMission(C, raised);
+  attachSimulation(m, simulate(m.reference));
+  const margin = m.settings.terrainMargin + m.settings.trackingMargin;
+  assert.ok(m.minCruiseClearance >= m.settings.clearance);
+  assert.ok(m.minCruiseClearance <= m.settings.clearance + margin + 1e-6);
+  const sample = evaluateMission(C, m, m.reference.surveyStart + 200);
+  near(sample.agl, sample.position.height - sample.terrainHeight, 1e-7);
+});
+
+test("approximate MSL is ellipsoid height minus the geoid undulation, and optional", () => {
+  assert.equal(typeof data.geoidUndulation, "number");
+  assert.equal(validateGeoidUndulation(data), data.geoidUndulation);
+  assert.equal(route.geoidUndulation, data.geoidUndulation);
+  assert.equal(mission.geoidUndulation, data.geoidUndulation);
+  for (const t of [0, mission.reference.surveyStart + 200, mission.duration]) {
+    const s = evaluateMission(C, mission, t);
+    near(s.mslAltitude, s.position.height - data.geoidUndulation, 1e-9);
+  }
+  // Without N the planner still works and reports no MSL value.
+  const { geoidUndulation: _omitted, ...withoutGeoid } = data;
+  for (const input of [withoutGeoid, { ...data, geoidUndulation: null }]) {
+    assert.equal(validateGeoidUndulation(input), null);
+    const r = createTerrainRoute(C, input);
+    assert.equal(r.geoidUndulation, null);
+    r.samples.forEach((p) => (p.height = 1150));
+    const m = attachSimulation(buildMission(C, r), simulation);
+    const s = evaluateMission(C, m, m.reference.surveyStart + 200);
+    assert.equal(s.mslAltitude, null);
+    near(s.relativeAltitude, s.position.height - m.groundHeight);
+  }
+  for (const bad of [NaN, Infinity, 500, -121, "27.26", {}])
+    assert.throws(
+      () => createTerrainRoute(C, { ...data, geoidUndulation: bad }),
+      /geoidUndulation/,
+    );
 });

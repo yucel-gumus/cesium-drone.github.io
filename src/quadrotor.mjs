@@ -2,10 +2,8 @@ import {
   clamp,
   dot,
   norm,
-  add,
   sub,
   mul,
-  unit,
   cross,
   wrap,
   qmul,
@@ -27,6 +25,10 @@ export const AIRFRAME = Object.freeze({
   reactionRatio: 0.018,
   maxRotorSpeed: 850,
   motorTimeConstant: 0.055,
+  // Spin inertia of one rotor (10 inch propeller plus motor bell), kg·m²; a
+  // generic estimate, not a measured value. Drives the gyroscopic and rotor
+  // acceleration reaction torques.
+  rotorInertia: 6e-5,
   dragArea: 0.08,
   linearDrag: 0.1,
   angularDrag: [0.003, 0.003, 0.004],
@@ -37,7 +39,11 @@ export const AIRFRAME = Object.freeze({
   controlHz: 120,
   recordHz: 30,
 });
-export const SPIN = [1, -1, 1, -1];
+// Rotor spin per motor (front right, back right, back left, front left):
+// +1 clockwise seen from above, so a rotor's reaction torque on the body is
+// +SPIN × reactionRatio × thrust about +z. Front right and back left turn
+// counter-clockwise, as in the bundled model and the PX4 quad X layout.
+export const SPIN = Object.freeze([-1, 1, -1, 1]);
 export const STRIDE = 36;
 export const PHASE_NAMES = [
   "arming",
@@ -60,6 +66,7 @@ export function validateAirframe(config) {
     "reactionRatio",
     "maxRotorSpeed",
     "motorTimeConstant",
+    "rotorInertia",
     "physicsHz",
     "controlHz",
     "recordHz",
@@ -77,12 +84,161 @@ export function validateAirframe(config) {
     );
 }
 const kf = (c) => (c.thrustCoefficient * c.airDensity) / 1.225;
-export function windAt(t, wind = 0) {
-  return [
-    wind / Math.hypot(1, 0.4) + 0.25 * wind * Math.sin(0.31 * t),
-    (0.4 * wind) / Math.hypot(1, 0.4) + 0.15 * wind * Math.sin(0.53 * t + 0.7),
-    0.04 * wind * Math.sin(0.7 * t),
-  ];
+// Mean wind blows towards east-north-east, east:north = 1:0.4.
+const WIND_EAST = 1 / Math.hypot(1, 0.4),
+  WIND_NORTH = 0.4 / Math.hypot(1, 0.4);
+export function meanWind(wind = 0) {
+  return [wind * WIND_EAST, wind * WIND_NORTH, 0];
+}
+// Representative height for the Dryden scale lengths: the survey flies about
+// 300 ft (91 m) above ground.
+export const TURBULENCE_ALTITUDE = 300 * 0.3048;
+// mulberry32: a tiny portable 32-bit generator; the same seed gives the same
+// sequence on every engine. Box–Muller turns uniform pairs into standard
+// normals, keeping the second sample for the next call.
+export function makeRandom(seed = 1) {
+  let a = seed >>> 0,
+    spare = NaN;
+  const uniform = () => {
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  const normal = () => {
+    if (!Number.isNaN(spare)) {
+      const z = spare;
+      spare = NaN;
+      return z;
+    }
+    const r = Math.sqrt(-2 * Math.log(1 - uniform())),
+      theta = 2 * Math.PI * uniform();
+    spare = r * Math.sin(theta);
+    return r * Math.cos(theta);
+  };
+  return { uniform, normal };
+}
+// MIL-F-8785C low-altitude Dryden intensities and scale lengths (valid for
+// 10–1000 ft). The specification is written in feet with h the height above
+// ground and W20 the mean wind at 20 ft; options.wind is used as W20:
+//   L_w = h,  L_u = L_v = h / (0.177 + 0.000823 h)^1.2
+//   σ_w = 0.1 W20,  σ_u = σ_v = σ_w / (0.177 + 0.000823 h)^0.4
+// Scale lengths are returned in metres; σ keeps the unit of `wind`.
+export function drydenParameters(wind, altitude = TURBULENCE_ALTITUDE) {
+  const FT = 0.3048,
+    h = clamp(altitude / FT, 10, 1000),
+    g = 0.177 + 0.000823 * h;
+  const sigmaW = 0.1 * wind,
+    sigmaU = sigmaW / g ** 0.4,
+    horizontal = (h / g ** 1.2) * FT;
+  return {
+    sigma: [sigmaU, sigmaU, sigmaW],
+    scale: [horizontal, horizontal, h * FT],
+  };
+}
+// Exact zero-order-hold discretization of the Dryden lateral/vertical filter
+// H(s) = σ (1 + √3 τ s) / (1 + τ s)², τ = L / V. In controllable canonical
+// form with b = 1/τ, the scaled states z₁ = b^{3/2} x₁ and z₂ = b^{1/2} x₂
+// obey ż = b [[0, 1], [−1, −2]] z + [0, √b] n (unit white noise n) and keep
+// the stationary covariance ¼ I for every b, so the output σ (z₁ + √3 z₂)
+// has variance σ² even while the airspeed V changes between steps. Over one
+// step with x = b dt the transition and process noise are
+//   Φ = e^{−x} [[1 + x, x], [−x, 1 − x]]
+//   Q = ∫₀ˣ e^{−2s} [[s², s (1 − s)], [s (1 − s), (1 − s)²]] ds
+// with Q₁₁ = (1 − e^{−2x}(1 + 2x + 2x²)) / 4, Q₁₂ = e^{−2x} x² / 2 and
+// Q₂₂ = (1 − e^{−2x}(1 − 2x + 2x²)) / 4; Q₁₁ switches to its power series
+// below x = 0.02 to avoid cancellation. `out` receives Φ (row-major) followed
+// by the Cholesky factor of Q (l₁₁, l₂₁, l₂₂), ready for two standard normals.
+export function drydenCoefficients(x, out = new Float64Array(7)) {
+  const e = Math.exp(-x),
+    e2 = e * e;
+  out[0] = e * (1 + x);
+  out[1] = e * x;
+  out[2] = -e * x;
+  out[3] = e * (1 - x);
+  const q11 =
+      x < 0.02
+        ? x *
+          x *
+          x *
+          (1 / 3 +
+            x * (-1 / 2 + x * (2 / 5 + x * (-2 / 9 + x * (2 / 21)))))
+        : (1 - e2 * (1 + 2 * x + 2 * x * x)) / 4,
+    q12 = (e2 * x * x) / 2,
+    q22 = (1 - e2 * (1 - 2 * x + 2 * x * x)) / 4;
+  const l11 = Math.sqrt(Math.max(0, q11)),
+    l21 = l11 > 0 ? q12 / l11 : 0;
+  out[4] = l11;
+  out[5] = l21;
+  out[6] = Math.sqrt(Math.max(0, q22 - l21 * l21));
+  return out;
+}
+// Mean wind plus Dryden turbulence, advanced once per physics step. The
+// longitudinal gust u follows the first order Dryden filter as an exact
+// Ornstein–Uhlenbeck step (a = e^{−V dt / L_u}, noise gain σ_u √(1 − a²));
+// v and w use drydenCoefficients(). V is the vehicle's air-relative speed,
+// as Taylor's frozen-turbulence hypothesis prescribes; at V = 0 the field is
+// simply not sampled and the gust holds. Filter states start from their
+// stationary distribution, so no warm-up is needed. `vector` is the ENU wind
+// [east, north, up] and is updated in place.
+export function makeTurbulence(wind = 0, options = {}) {
+  const { seed = 1, turbulence = true, altitude = TURBULENCE_ALTITUDE } =
+    options;
+  if (!Number.isFinite(wind) || wind < 0)
+    throw new Error("Geçersiz rüzgâr hızı: negatif olmayan sayı olmalı.");
+  if (!Number.isFinite(seed))
+    throw new Error("Geçersiz türbülans tohumu: sayı olmalı.");
+  const { sigma, scale } = drydenParameters(wind, altitude),
+    active = turbulence !== false && wind > 0,
+    random = makeRandom(seed),
+    vector = new Float64Array(3),
+    coefficients = new Float64Array(7),
+    SQRT3 = Math.sqrt(3);
+  let u = 0,
+    v1 = 0,
+    v2 = 0,
+    w1 = 0,
+    w2 = 0;
+  if (active) {
+    u = sigma[0] * random.normal();
+    v1 = 0.5 * random.normal();
+    v2 = 0.5 * random.normal();
+    w1 = 0.5 * random.normal();
+    w2 = 0.5 * random.normal();
+  }
+  // u along the mean wind, v to its left, w up.
+  const compose = () => {
+    const v = sigma[1] * (v1 + SQRT3 * v2);
+    vector[0] = (wind + u) * WIND_EAST - v * WIND_NORTH;
+    vector[1] = (wind + u) * WIND_NORTH + v * WIND_EAST;
+    vector[2] = sigma[2] * (w1 + SQRT3 * w2);
+  };
+  compose();
+  const advance = (dt, airspeed = wind) => {
+    if (!active) return vector;
+    const speed = Math.max(0, airspeed),
+      x = (speed * dt) / scale[0];
+    u =
+      Math.exp(-x) * u +
+      sigma[0] * Math.sqrt(-Math.expm1(-2 * x)) * random.normal();
+    let c = drydenCoefficients((speed * dt) / scale[1], coefficients),
+      n1 = random.normal(),
+      n2 = random.normal(),
+      z1 = c[0] * v1 + c[1] * v2 + c[4] * n1,
+      z2 = c[2] * v1 + c[3] * v2 + c[5] * n1 + c[6] * n2;
+    v1 = z1;
+    v2 = z2;
+    c = drydenCoefficients((speed * dt) / scale[2], coefficients);
+    n1 = random.normal();
+    n2 = random.normal();
+    z1 = c[0] * w1 + c[1] * w2 + c[4] * n1;
+    z2 = c[2] * w1 + c[3] * w2 + c[5] * n1 + c[6] * n2;
+    w1 = z1;
+    w2 = z2;
+    compose();
+    return vector;
+  };
+  return { vector, sigma, scale, active, advance };
 }
 export function wrench(motors, c = AIRFRAME) {
   const a = c.armLength / Math.sqrt(2),
@@ -117,54 +273,142 @@ export function initialState(yaw = 0) {
   s[9] = Math.sin(yaw / 2);
   return s;
 }
-export function derivative(state, commands, time, c = AIRFRAME, wind = 0) {
-  const s = state,
-    q = Array.from(s.slice(6, 10)),
-    w = Array.from(s.slice(10, 13));
-  const { thrust, torque } = wrench(Array.from(s.slice(13, 17)), c);
-  const thrustWorld = rotate(q, [0, 0, thrust]),
-    relative = sub(Array.from(s.slice(3, 6)), windAt(time, wind));
-  const drag = mul(
-    relative,
-    -0.5 * c.airDensity * c.dragArea * norm(relative) - c.linearDrag,
-  );
-  const acceleration = mul(add(thrustWorld, drag), 1 / c.mass);
-  acceleration[2] -= c.gravity;
-  const gyroscopic = cross(
-    w,
-    w.map((x, i) => x * c.inertia[i]),
-  );
-  const alpha = torque.map(
-    (x, i) => (x - gyroscopic[i] - c.angularDrag[i] * w[i]) / c.inertia[i],
-  );
-  const qdot = mul(qmul(q, [0, ...w]), 0.5);
-  const out = new Float64Array(21);
-  out.set(s.slice(3, 6), 0);
-  out.set(acceleration, 3);
-  out.set(qdot, 6);
-  out.set(alpha, 10);
-  for (let i = 0; i < 4; i++) {
-    out[13 + i] = (commands[i] - s[13 + i]) / c.motorTimeConstant;
-    out[17 + i] = s[13 + i];
+// State layout: 0-2 position, 3-5 velocity, 6-9 quaternion w,x,y,z,
+// 10-12 body rates, 13-16 rotor speeds, 17-20 rotor angles. Written with
+// scalars and an optional output buffer: this runs ~10⁶ times per mission.
+export function derivative(
+  state,
+  commands,
+  time,
+  c = AIRFRAME,
+  wind = 0,
+  out = new Float64Array(21),
+) {
+  const s = state;
+  const qw = s[6],
+    qx = s[7],
+    qy = s[8],
+    qz = s[9],
+    wx = s[10],
+    wy = s[11],
+    wz = s[12];
+  // Rotor wrench (same algebra as wrench()).
+  const k = kf(c),
+    a = c.armLength / Math.sqrt(2);
+  const f0 = k * s[13] * s[13],
+    f1 = k * s[14] * s[14],
+    f2 = k * s[15] * s[15],
+    f3 = k * s[16] * s[16];
+  const thrust = f0 + f1 + f2 + f3;
+  const tx = -a * f0 + -a * f1 + a * f2 + a * f3,
+    ty = -(a * f0 + -a * f1 + -a * f2 + a * f3),
+    tz =
+      c.reactionRatio *
+      (SPIN[0] * f0 + SPIN[1] * f1 + SPIN[2] * f2 + SPIN[3] * f3);
+  // Thrust along body z rotated into ENU: v + 2 q.w (q.v × v) + 2 q.v × (q.v × v).
+  const t0 = qy * thrust * 2,
+    t1 = (0 - qx * thrust) * 2;
+  const fx = t0 * qw + (0 - qz * t1),
+    fy = t1 * qw + (qz * t0 - 0),
+    fz = thrust + (qx * t1 - qy * t0);
+  // Wind: a number is a steady mean wind of that speed (east-north-east), an
+  // ENU array [east, north, up] is used as given. simulate() advances the
+  // turbulence generator once per physics step and passes its vector, so all
+  // four RK4 stages see one wind sample; `time` stays for signature
+  // compatibility and no longer drives any gust model.
+  let wind0, wind1, wind2;
+  if (typeof wind === "number") {
+    wind0 = wind * WIND_EAST;
+    wind1 = wind * WIND_NORTH;
+    wind2 = 0;
+  } else {
+    wind0 = wind[0];
+    wind1 = wind[1];
+    wind2 = wind[2];
   }
+  // Air-relative velocity and quadratic plus linear drag.
+  const r0 = s[3] - wind0,
+    r1 = s[4] - wind1,
+    r2 = s[5] - wind2;
+  const dragFactor =
+    -0.5 * c.airDensity * c.dragArea * Math.hypot(r0, r1, r2) - c.linearDrag;
+  const inverseMass = 1 / c.mass;
+  out[0] = s[3];
+  out[1] = s[4];
+  out[2] = s[5];
+  out[3] = (fx + r0 * dragFactor) * inverseMass;
+  out[4] = (fy + r1 * dragFactor) * inverseMass;
+  out[5] = (fz + r2 * dragFactor) * inverseMass - c.gravity;
+  // Quaternion kinematics q̇ = ½ q ⊗ [0, Ω].
+  out[6] = (0 - qx * wx - qy * wy - qz * wz) * 0.5;
+  out[7] = (qw * wx + qy * wz - qz * wy) * 0.5;
+  out[8] = (qw * wy - qx * wz + qz * wx) * 0.5;
+  out[9] = (qw * wz + qx * wy - qy * wx) * 0.5;
+  // Rotor spin-up (first order motor lag), needed below for the reaction.
+  const a0 = (commands[0] - s[13]) / c.motorTimeConstant,
+    a1 = (commands[1] - s[14]) / c.motorTimeConstant,
+    a2 = (commands[2] - s[15]) / c.motorTimeConstant,
+    a3 = (commands[3] - s[16]) / c.motorTimeConstant;
+  // Rotor inertia. A rotor with SPIN +1 turns clockwise from above, i.e. about
+  // −z, so the rotors' spin momentum is h = −J_r Σ SPIN_i ω_i e_z. The body
+  // equation I Ω̇ = τ − Ω × (I Ω) − Ω × h − ḣ − D Ω gains the gyroscopic term
+  // −Ω × h = J_r Σ SPIN_i ω_i [Ω_y, −Ω_x, 0] and the spin-up reaction
+  // −ḣ_z = J_r Σ SPIN_i ω̇_i about z (same sign rule as reactionRatio: a
+  // clockwise rotor accelerating torques the body about +z).
+  const spinMomentum =
+      c.rotorInertia *
+      (SPIN[0] * s[13] + SPIN[1] * s[14] + SPIN[2] * s[15] + SPIN[3] * s[16]),
+    reaction =
+      c.rotorInertia *
+      (SPIN[0] * a0 + SPIN[1] * a1 + SPIN[2] * a2 + SPIN[3] * a3);
+  // Euler: I Ω̇ = τ − Ω × (I Ω) − D Ω, plus the rotor terms above.
+  const [ix, iy, iz] = c.inertia,
+    [dx, dy, dz] = c.angularDrag;
+  const gx = wy * (wz * iz) - wz * (wy * iy),
+    gy = wz * (wx * ix) - wx * (wz * iz),
+    gz = wx * (wy * iy) - wy * (wx * ix);
+  out[10] = (tx - gx - dx * wx + spinMomentum * wy) / ix;
+  out[11] = (ty - gy - dy * wy - spinMomentum * wx) / iy;
+  out[12] = (tz - gz - dz * wz + reaction) / iz;
+  out[13] = a0;
+  out[14] = a1;
+  out[15] = a2;
+  out[16] = a3;
+  out[17] = s[13];
+  out[18] = s[14];
+  out[19] = s[15];
+  out[20] = s[16];
   return out;
 }
+const k1 = new Float64Array(21),
+  k2 = new Float64Array(21),
+  k3 = new Float64Array(21),
+  k4 = new Float64Array(21),
+  stage = new Float64Array(21);
 export function rk4Step(s, commands, t, dt, c = AIRFRAME, wind = 0) {
-  const tmp = (k, f) => s.map((x, i) => x + k[i] * f);
-  const a = derivative(s, commands, t, c, wind),
-    b = derivative(tmp(a, dt / 2), commands, t + dt / 2, c, wind),
-    d = derivative(tmp(b, dt / 2), commands, t + dt / 2, c, wind),
-    e = derivative(tmp(d, dt), commands, t + dt, c, wind);
-  const result = s.map(
-    (x, i) => x + (dt * (a[i] + 2 * b[i] + 2 * d[i] + e[i])) / 6,
-  );
-  const qnorm = Math.hypot(...result.slice(6, 10));
+  derivative(s, commands, t, c, wind, k1);
+  for (let i = 0; i < 21; i++) stage[i] = s[i] + k1[i] * (dt / 2);
+  derivative(stage, commands, t + dt / 2, c, wind, k2);
+  for (let i = 0; i < 21; i++) stage[i] = s[i] + k2[i] * (dt / 2);
+  derivative(stage, commands, t + dt / 2, c, wind, k3);
+  for (let i = 0; i < 21; i++) stage[i] = s[i] + k3[i] * dt;
+  derivative(stage, commands, t + dt, c, wind, k4);
+  const result = new Float64Array(21);
+  for (let i = 0; i < 21; i++)
+    result[i] = s[i] + (dt * (k1[i] + 2 * k2[i] + 2 * k3[i] + k4[i])) / 6;
+  const qnorm = Math.hypot(result[6], result[7], result[8], result[9]);
   for (let i = 6; i < 10; i++) result[i] /= qnorm;
   return result;
 }
 
 export function makeController(yaw) {
-  return { integral: [0, 0, 0], yaw, yawRate: 0, disarmTime: null };
+  return {
+    integral: [0, 0, 0],
+    yaw,
+    yawRate: 0,
+    disarmTime: null,
+    previousDesired: null,
+  };
 }
 export function control(state, ref, controller, dt, time, c = AIRFRAME) {
   const p = Array.from(state.slice(0, 3)),
@@ -226,9 +470,18 @@ export function control(state, ref, controller, dt, time, c = AIRFRAME) {
     w,
     w.map((x, i) => x * c.inertia[i]),
   );
+  // Rotor gyroscopic torque J_r Σ SPIN_i ω_i [Ω_y, −Ω_x, 0] acts on the body
+  // (see derivative()); cancel it under the same ideal-state assumption as
+  // the Euler coupling, using the integrated rotor speeds.
+  const spinMomentum =
+      c.rotorInertia * dot(SPIN, Array.from(state.slice(13, 17))),
+    rotorGyro = [spinMomentum * w[1], -spinMomentum * w[0], 0];
   const torque = w.map((x, i) =>
     clamp(
-      c.inertia[i] * 12 * (rate[i] - x) + gyro[i] + c.angularDrag[i] * x,
+      c.inertia[i] * 12 * (rate[i] - x) +
+        gyro[i] +
+        c.angularDrag[i] * x -
+        rotorGyro[i],
       -[0.8, 0.8, 0.35][i],
       [0.8, 0.8, 0.35][i],
     ),
@@ -258,19 +511,25 @@ export function simulate(reference, options = {}, onProgress = () => {}) {
   const c = { ...AIRFRAME, ...options.airframe };
   validateAirframe(c);
   const wind = options.wind ?? 2,
+    seed = options.seed ?? 1,
+    turbulence = options.turbulence ?? true,
     dt = 1 / c.physicsHz,
     recordEvery = c.physicsHz / c.recordHz,
     controlEvery = c.physicsHz / c.controlHz;
+  // One wind sample per physics step, shared by the four RK4 stages.
+  const gust = makeTurbulence(wind, { seed, turbulence });
   let state = initialState(reference.initialYaw),
     commands = [0, 0, 0, 0],
     distance = 0,
-    previous = [0, 0, 0],
+    px = 0,
+    py = 0,
+    pz = 0,
     output;
   const controller = makeController(reference.initialYaw);
   const count = Math.ceil(reference.duration * c.physicsHz);
   const data = new Float64Array((Math.floor(count / recordEvery) + 2) * STRIDE);
   let rows = 0,
-    lastAcceleration = [0, 0, 0],
+    lastAcceleration = new Float64Array(3),
     contact = false;
   const metrics = {
     maxTrackingError: 0,
@@ -285,8 +544,6 @@ export function simulate(reference, options = {}, onProgress = () => {}) {
     maxAirborneJerk: 0,
     saturationSeconds: 0,
     contactSpeed: 0,
-    steps: count,
-    physicsHz: c.physicsHz,
   };
   function record(t, ref) {
     const offset = rows++ * STRIDE,
@@ -297,7 +554,9 @@ export function simulate(reference, options = {}, onProgress = () => {}) {
     data.set(state.slice(13, 17), offset + 17);
     data[offset + 21] = thrust;
     data.set(torque, offset + 22);
-    data.set(windAt(t, wind), offset + 25);
+    data[offset + 25] = gust.vector[0];
+    data[offset + 26] = gust.vector[1];
+    data[offset + 27] = gust.vector[2];
     data[offset + 28] = distance;
     data[offset + 29] = norm(sub(Array.from(state.slice(0, 3)), ref.p));
     data[offset + 30] = PHASE_NAMES.indexOf(ref.phase);
@@ -313,7 +572,7 @@ export function simulate(reference, options = {}, onProgress = () => {}) {
       commands = output.commands;
     }
     const before = state;
-    state = rk4Step(state, commands, t, dt, c, wind);
+    state = rk4Step(state, commands, t, dt, c, gust.vector);
     // Unilateral pad contact: normal impulse + Coulomb friction. No snapping to
     // the home XY or prescribed orientation; residual landing error is retained.
     if (state[2] < 0) {
@@ -337,55 +596,82 @@ export function simulate(reference, options = {}, onProgress = () => {}) {
       }
       contact = true;
     } else contact = false;
+    // Scalar check: no per-step allocation in the 240 Hz loop.
     if (
       !state.every(Number.isFinite) ||
-      norm(Array.from(state.slice(0, 3))) > 15000
+      Math.hypot(state[0], state[1], state[2]) > 15000
     )
       throw new Error("Fizik çözümü kararsız: uçuş hazırlanmadı.");
-    const p = Array.from(state.slice(0, 3)),
-      v = Array.from(state.slice(3, 6)),
-      acc = Array.from(state.slice(3, 6)).map(
-        (x, i) => (x - before[3 + i]) / dt,
-      );
-    distance += norm(sub(p, previous));
-    previous = p;
+    const ax = (state[3] - before[3]) / dt,
+      ay = (state[4] - before[4]) / dt,
+      az = (state[5] - before[5]) / dt;
+    distance += Math.hypot(state[0] - px, state[1] - py, state[2] - pz);
+    px = state[0];
+    py = state[1];
+    pz = state[2];
     metrics.maxTrackingError = Math.max(
       metrics.maxTrackingError,
-      norm(sub(Array.from(before.slice(0, 3)), ref.p)),
+      Math.hypot(before[0] - ref.p[0], before[1] - ref.p[1], before[2] - ref.p[2]),
     );
     metrics.maxGroundSpeed = Math.max(
       metrics.maxGroundSpeed,
-      Math.hypot(v[0], v[1]),
+      Math.hypot(state[3], state[4]),
     );
-    metrics.maxClimb = Math.max(metrics.maxClimb, v[2]);
-    metrics.maxDescent = Math.max(metrics.maxDescent, -v[2]);
-    const z = rotate(Array.from(state.slice(6, 10)), [0, 0, 1]);
-    metrics.maxTilt = Math.max(metrics.maxTilt, Math.acos(clamp(z[2], -1, 1)));
-    metrics.maxBodyRate = Math.max(
-      metrics.maxBodyRate,
-      norm(Array.from(state.slice(10, 13))),
+    metrics.maxClimb = Math.max(metrics.maxClimb, state[5]);
+    metrics.maxDescent = Math.max(metrics.maxDescent, -state[5]);
+    const qw = state[6],
+      qx = state[7],
+      qy = state[8],
+      qz = state[9],
+      wx = state[10],
+      wy = state[11],
+      wz = state[12];
+    // Body z axis in ENU (tilt) and body rate rotated into ENU (yaw rate).
+    metrics.maxTilt = Math.max(
+      metrics.maxTilt,
+      Math.acos(clamp(1 + (qx * (-qx * 2) - qy * (qy * 2)), -1, 1)),
     );
+    metrics.maxBodyRate = Math.max(metrics.maxBodyRate, Math.hypot(wx, wy, wz));
+    const r0 = (qy * wz - qz * wy) * 2,
+      r1 = (qz * wx - qx * wz) * 2,
+      r2 = (qx * wy - qy * wx) * 2;
     metrics.maxYawRate = Math.max(
       metrics.maxYawRate,
-      Math.abs(
-        rotate(
-          Array.from(state.slice(6, 10)),
-          Array.from(state.slice(10, 13)),
-        )[2],
-      ),
+      Math.abs(wz + (r2 * qw + (qx * r1 - qy * r0))),
     );
     metrics.maxRotorSpeed = Math.max(
       metrics.maxRotorSpeed,
-      ...state.slice(13, 17),
+      state[13],
+      state[14],
+      state[15],
+      state[16],
     );
-    metrics.maxAcceleration = Math.max(metrics.maxAcceleration, norm(acc));
+    metrics.maxAcceleration = Math.max(
+      metrics.maxAcceleration,
+      Math.hypot(ax, ay, az),
+    );
     if (state[2] > 1 && before[2] > 1)
       metrics.maxAirborneJerk = Math.max(
         metrics.maxAirborneJerk,
-        norm(sub(acc, lastAcceleration)) / dt,
+        Math.hypot(
+          ax - lastAcceleration[0],
+          ay - lastAcceleration[1],
+          az - lastAcceleration[2],
+        ) / dt,
       );
     if (output.saturated) metrics.saturationSeconds += dt;
-    lastAcceleration = acc;
+    lastAcceleration[0] = ax;
+    lastAcceleration[1] = ay;
+    lastAcceleration[2] = az;
+    // Next step's wind; the frozen field is traversed at air-relative speed.
+    gust.advance(
+      dt,
+      Math.hypot(
+        state[3] - gust.vector[0],
+        state[4] - gust.vector[1],
+        state[5] - gust.vector[2],
+      ),
+    );
     if ((step + 1) % recordEvery === 0 || step === count - 1)
       record((step + 1) * dt, referenceAt(reference, (step + 1) * dt));
     if (step % 2400 === 0) onProgress(step / count);
@@ -406,6 +692,8 @@ export function simulate(reference, options = {}, onProgress = () => {}) {
     metrics,
     airframe: c,
     wind,
+    seed,
+    turbulence,
     rows,
   };
 }

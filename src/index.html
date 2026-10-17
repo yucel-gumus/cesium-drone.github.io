@@ -82,19 +82,41 @@
                 step="0.1"
                 value="2"
             /></label>
-            <label for="windInput"
+            <label
+              for="windInput"
+              title="Ortalama rüzgâr hızı; MIL-F-8785C Dryden türbülansı (σ ≈ 0,14 × hız, seçilen tohum) üzerine eklenir. Üst sınır 3,5 m/s: 2 kg profilde 25° yatış / 4 m/s² ivme sınırının hamlelerle birlikte takip hatasını 1 m altında tuttuğu en yüksek değer; daha hafif gövdelerde yetki daha erken biter."
               >Rüzgâr · m/s<input
                 id="windInput"
                 type="number"
                 min="0"
-                max="6"
+                max="3.5"
                 step="0.5"
                 value="2"
             /></label>
+            <label
+              for="seedInput"
+              title="Dryden türbülansının rastgele sayı tohumu (0–4294967295). Aynı tohum ve girdiler bit düzeyinde aynı hamle dizisini verir; farklı tohum farklı bir hamle dizisi üretir."
+              >Tohum<input
+                id="seedInput"
+                type="number"
+                min="0"
+                max="4294967295"
+                step="1"
+                value="1"
+            /></label>
+            <label
+              for="turbulenceInput"
+              title="Kapalıyken yalnızca sabit ortalama rüzgâr uygulanır; tohum kullanılmaz."
+              >Türbülans<span class="toggle"
+                ><input id="turbulenceInput" type="checkbox" checked /><span
+                  >Dryden hamleleri</span
+                ></span
+              ></label
+            >
           </div>
           <p class="field-note">
-            Genel X quad · D-KD rüzgârı ve sentetik hamleler. Değişikliklerden
-            sonra rotayı hesaplayın.
+            Genel X quad · D-KD ortalama rüzgârı ve Dryden türbülansı.
+            Değişikliklerden sonra rotayı hesaplayın.
           </p>
           <p id="message" class="message" role="status" aria-live="polite">
             Arazi ve uçuş planı hazırlanıyor…
@@ -128,6 +150,12 @@
                 title="WGS84 elipsoidi üzerindeki yükseklik; deniz seviyesi yüksekliği değildir."
                 >Elipsoit irtifası ⓘ</span
               ><strong id="absoluteAltitude">—</strong>
+            </div>
+            <div class="metric">
+              <span
+                title="Rota dosyasındaki jeoit ondülasyonu N çıkarılarak hesaplanan yaklaşık deniz seviyesi yüksekliği; elipsoit irtifası − N. Kalibre ölçüm değildir."
+                >Yaklaşık MSL irtifası ⓘ</span
+              ><strong id="mslAltitude">—</strong>
             </div>
             <div class="metric">
               <span>Kalkışa göre</span><strong id="relativeAltitude">—</strong>

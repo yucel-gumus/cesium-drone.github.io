@@ -87,7 +87,7 @@ export function roundedPath(points, trim = 45, spacing = 2) {
     while (cursor < dense.length - 2 && dense[cursor + 1].s < s) cursor++;
     const a = dense[cursor],
       b = dense[cursor + 1],
-      f = (s - a.s) / (b.s - a.s);
+      f = b.s > a.s ? (s - a.s) / (b.s - a.s) : 0;
     table.push({
       s,
       p: add(mul(a.p, 1 - f), mul(b.p, f)),
@@ -279,7 +279,6 @@ export function makeReference(path, cruiseHeight, settings) {
     cruiseHeight,
     initialYaw,
     finalYaw,
-    pathLength: path.length,
     timeScale: scale,
   };
 }
@@ -301,7 +300,6 @@ export function referenceAt(ref, time) {
       yaw: phase.yaw,
       yawRate: 0,
       phase: phase.phase,
-      progress: phase.startTime > ref.surveyStart ? 1 : 0,
     };
   }
   const local = t - ref.surveyStart;
@@ -329,6 +327,5 @@ export function referenceAt(ref, time) {
           : ref.finalYaw,
     yawRate: speed2 > 1e-8 ? (x.v * y.a - y.v * x.a) / speed2 : 0,
     phase: local > ref.horizontalDuration * 0.88 ? "return" : "survey",
-    progress: local / ref.horizontalDuration,
   };
 }

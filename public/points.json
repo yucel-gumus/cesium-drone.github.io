@@ -2,6 +2,20 @@
   "name": "Uzungöl kıyı ve vadi keşfi",
   "coordinateSystem": "WGS84 longitude/latitude in degrees",
   "altitudeMode": "terrain-relative; heights are computed from Cesium World Terrain",
+  "bounds": {
+    "west": 40.25,
+    "east": 40.35,
+    "south": 40.59,
+    "north": 40.65
+  },
+  "geoidUndulation": 27.2621,
+  "geoidSource": {
+    "model": "EGM96",
+    "url": "https://geographiclib.sourceforge.io/cgi-bin/GeoidEval?input=40.618+40.298",
+    "evaluatedAt": { "latitude": 40.618, "longitude": 40.298 },
+    "retrieved": "2026-10-17",
+    "note": "Approximate MSL = ellipsoidal height - geoidUndulation. EGM2008 gives 30.0493 m at the same point. Not a calibrated measurement."
+  },
   "dronePoints": [
     {
       "longitude": 40.2925729751587,

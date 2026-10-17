@@ -349,6 +349,10 @@ try {
       expected: new URL(r.url).host === "api.cesium.com" && r.status === 401,
     }));
   assert.equal(report.failedRequests.filter((r) => !r.expected).length, 0);
+  check(
+    "Only the deliberate invalid-token 401 failed on the network",
+    report.failedRequests,
+  );
   report.success = true;
 } catch (error) {
   report.success = false;

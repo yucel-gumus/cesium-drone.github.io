@@ -8,6 +8,12 @@ import {
 } from "./flight-planner.mjs";
 import DroneUIController from "./ui-controller.js";
 import { createPositionProperty } from "./position-property.mjs";
+import {
+  ROTOR_NODES,
+  MODEL_ROOT_NODE,
+  modelScale,
+  modelGroundOffset,
+} from "./drone-model.mjs";
 import "./style.css";
 import { AIRFRAME, SPIN, STRIDE } from "./quadrotor.mjs";
 
@@ -22,6 +28,10 @@ const FOLLOW_VIEWS = {
   diagonal: { bearing: Math.PI / 4, pitch: -0.6 },
 };
 const buildToken = process.env.CESIUM_ION_TOKEN;
+// Mean-wind authority limit of the 2 kg profile (m/s), the same as windInput
+// max in index.html: the highest 0.5 m/s step at which the full mission keeps
+// its tracking error under 1 m for every turbulence seed tried. See README.
+const WIND_LIMIT = 3.5;
 let viewer, mission, drone, provider;
 let currentState = "loading";
 let cameraMode = "overview";
@@ -29,7 +39,9 @@ let runId = 0;
 let startTime;
 let lastUiUpdate = 0;
 let missionEntities = [];
-let activeWorker;
+let cancelSolve;
+// Sampled terrain heights for the current waypoint file and terrain provider.
+let terrainCache;
 let cachedSample, cachedTime;
 let followHeading = 0,
   followPitch = FOLLOW_VIEWS.rear.pitch,
@@ -264,13 +276,21 @@ function initializeFollowZoom() {
 }
 
 function solveDynamics(reference, options) {
-  activeWorker?.terminate();
+  cancelSolve?.();
   const worker = new Worker(
     new URL("./simulation-worker.mjs", import.meta.url),
   );
-  activeWorker = worker;
   return withTimeout(
     new Promise((resolve, reject) => {
+      // A newer plan supersedes this solve: stop the worker and settle now
+      // instead of leaving the promise pending until the timeout.
+      cancelSolve = Object.assign(
+        () => {
+          worker.terminate();
+          reject(new Error("Fizik çözümü yeni bir planla iptal edildi."));
+        },
+        { worker },
+      );
       worker.onmessage = ({ data }) => {
         if (data.error) reject(new Error(data.error));
         else if (data.simulation) resolve(data.simulation);
@@ -289,7 +309,7 @@ function solveDynamics(reference, options) {
     "Fizik çözümü zaman aşımına uğradı.",
   ).finally(() => {
     worker.terminate();
-    if (activeWorker === worker) activeWorker = undefined;
+    if (cancelSolve && worker === cancelSolve.worker) cancelSolve = undefined;
   });
 }
 
@@ -317,7 +337,7 @@ async function prepareMission(clearance = 70, overrideToken) {
   setState("loading");
   viewer.clock.shouldAnimate = false;
   viewer.trackedEntity = undefined;
-  activeWorker?.terminate();
+  cancelSolve?.();
   mission = undefined;
   cachedSample = undefined;
   missionEntities.forEach((entity) => viewer.entities.remove(entity));
@@ -338,8 +358,9 @@ async function prepareMission(clearance = 70, overrideToken) {
       );
     C.Ion.defaultAccessToken = token;
     if (!provider) {
+      // Globe lighting is off, so vertex normals would only add tile bytes.
       provider = await withTimeout(
-        C.createWorldTerrainAsync({ requestVertexNormals: true }),
+        C.createWorldTerrainAsync({ requestVertexNormals: false }),
         25000,
         "Arazi servisi yanıt vermedi. Bağlantınızı veya tokenınızı kontrol edin.",
       );
@@ -348,31 +369,56 @@ async function prepareMission(clearance = 70, overrideToken) {
     const response = await fetch(new URL("./points.json", document.baseURI));
     if (!response.ok)
       throw new Error(`Rota dosyası yüklenemedi (HTTP ${response.status}).`);
+    const waypointText = await response.text();
     const mass = Number(ui.elements.massInput.value),
-      wind = Number(ui.elements.windInput.value);
+      wind = Number(ui.elements.windInput.value),
+      seed = Number(ui.elements.seedInput.value),
+      turbulence = ui.elements.turbulenceInput.checked;
     if (
       !Number.isFinite(mass) ||
       mass < 1 ||
       mass > 3 ||
       !Number.isFinite(wind) ||
       wind < 0 ||
-      wind > 6
+      wind > WIND_LIMIT
     )
-      throw new Error("Kütle 1–3 kg, rüzgâr 0–6 m/s arasında olmalı.");
-    const route = createTerrainRoute(C, await response.json(), {
+      throw new Error(
+        `Kütle 1–3 kg, rüzgâr 0–${WIND_LIMIT.toLocaleString("tr")} m/s arasında olmalı.`,
+      );
+    // mulberry32 takes a 32-bit seed; larger or fractional values would alias.
+    if (!Number.isInteger(seed) || seed < 0 || seed > 4294967295)
+      throw new Error(
+        "Türbülans tohumu 0–4294967295 arasında bir tam sayı olmalı.",
+      );
+    const route = createTerrainRoute(C, JSON.parse(waypointText), {
       clearance,
       wind,
     });
-    await withTimeout(
-      sampleTerrainRoute(C, provider, route, (progress) => {
-        if (id === runId && currentState === "loading")
-          ui.message(
-            `Arazi koridoru örnekleniyor · %${Math.round(progress * 100)}`,
-          );
-      }),
-      90000,
-      "Arazi örneklemesi tamamlanamadı. Yeniden hesaplayın veya erişim tokenını kontrol edin.",
-    );
+    // Sample positions depend only on the waypoints and corridor constants, so
+    // re-planning with another clearance, mass or wind reuses the heights.
+    if (
+      terrainCache?.provider === provider &&
+      terrainCache.waypointText === waypointText &&
+      terrainCache.heights.length === route.samples.length
+    ) {
+      route.samples.forEach((p, i) => (p.height = terrainCache.heights[i]));
+    } else {
+      await withTimeout(
+        sampleTerrainRoute(C, provider, route, (progress) => {
+          if (id === runId && currentState === "loading")
+            ui.message(
+              `Arazi koridoru örnekleniyor · %${Math.round(progress * 100)}`,
+            );
+        }),
+        90000,
+        "Arazi örneklemesi tamamlanamadı. Yeniden hesaplayın veya erişim tokenını kontrol edin.",
+      );
+      terrainCache = {
+        provider,
+        waypointText,
+        heights: route.samples.map((p) => p.height),
+      };
+    }
     if (id !== runId) return;
     const candidate = buildMission(C, route);
     const airframe = {
@@ -383,6 +429,8 @@ async function prepareMission(clearance = 70, overrideToken) {
     const simulation = await solveDynamics(candidate.reference, {
       airframe,
       wind,
+      seed,
+      turbulence,
     });
     if (id !== runId) return;
     attachSimulation(candidate, simulation);
@@ -444,14 +492,21 @@ function installMission() {
       result || new C.Quaternion(),
     );
   }, false);
-  const rotorNames = [
-    "PropClockwiseFront_low",
-    "PropClockwiseBack_low",
-    "PropCounterClockwiseBack_low",
-    "PropCounterClockwiseFront_low",
-  ];
-  const nodeTransformations = {};
-  rotorNames.forEach((name, i) => {
+  const { armLength } = mission.simulation.airframe;
+  const nodeTransformations = {
+    // Drop the model so its base plate rests on the pad at touchdown; the
+    // entity position itself stays the physical CG.
+    [MODEL_ROOT_NODE]: new C.TranslationRotationScale(
+      new C.Cartesian3(
+        0,
+        modelGroundOffset(armLength, mission.settings.landingOffset),
+        0,
+      ),
+    ),
+  };
+  // Rotor nodes spin about their local +Y (glTF up). A positive angle about
+  // +Y is counter-clockwise seen from above, so clockwise (SPIN +1) is negated.
+  ROTOR_NODES.forEach((name, i) => {
     nodeTransformations[name] = new C.CallbackProperty(
       (time) =>
         new C.TranslationRotationScale(
@@ -470,9 +525,8 @@ function installMission() {
     orientation,
     model: {
       uri: new URL("./drone.glb", document.baseURI).href,
-      scale: (2 * mission.simulation.airframe.armLength) / Math.sqrt(2) / 3.4,
+      scale: modelScale(armLength),
       minimumPixelSize: 0,
-      shadows: C.ShadowMode.ENABLED,
       runAnimations: false,
       nodeTransformations,
     },
@@ -544,6 +598,9 @@ function installMission() {
       showBackground: true,
       backgroundColor: C.Color.fromCssColorString("#101b20").withAlpha(0.85),
       disableDepthTestDistance: 15000,
+      // Hide the label at close follow ranges (1.2–5 m) so it does not cover
+      // the drone model, and beyond 15 km where it would be unreadable anyway.
+      distanceDisplayCondition: new C.DistanceDisplayCondition(6, 15000),
     },
   });
   // Useful for local inspection and numerical/browser regression checks.
@@ -602,7 +659,11 @@ function boot() {
     window.viewer = viewer;
     viewer.scene.globe.depthTestAgainstTerrain = true;
     viewer.scene.globe.enableLighting = false;
-    viewer.scene.globe.maximumScreenSpaceError = 1.5;
+    // A coarse pointer marks touch/mobile devices: a looser tile error keeps
+    // terrain detail affordable on their weaker GPUs and mobile bandwidth.
+    const coarsePointer =
+      globalThis.matchMedia?.("(pointer: coarse)")?.matches === true;
+    viewer.scene.globe.maximumScreenSpaceError = coarsePointer ? 2 : 1.5;
     viewer.scene.screenSpaceCameraController.minimumZoomDistance = 1;
     initializeFollowZoom();
     viewer.scene.camera.setView({
