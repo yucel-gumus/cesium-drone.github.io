@@ -15,7 +15,7 @@ const base =
 const artifacts = path.resolve("artifacts");
 const TOKEN_KEY = "uzungol-ion-token";
 // Mean-wind authority limit of the 2 kg profile, as in src/index.html and
-// src/main.js prepareMission(); see README "Fizik çekirdeği".
+// src/main.js prepareMission(); see README "Rüzgâr yetki sınırı".
 const WIND_LIMIT = "3.5";
 // Inputs that must stay locked while a plan is solved or a flight runs.
 const ENVIRONMENT_FIELDS = [
