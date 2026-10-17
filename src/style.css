@@ -201,9 +201,14 @@ h2 {
   margin-bottom: 18px;
   padding: 14px;
 }
-.plan-stats div + div {
+.plan-stats div:nth-child(even) {
   border-left: 1px solid var(--line);
   padding-left: 18px;
+}
+.plan-stats div:nth-child(n + 3) {
+  border-top: 1px solid var(--line);
+  margin-top: 12px;
+  padding-top: 12px;
 }
 .plan-stats span {
   display: block;
@@ -810,10 +815,22 @@ select {
   color: var(--muted);
   font-size: 10px;
 }
-.environment-controls input {
+.environment-controls input,
+.environment-controls select {
   display: block;
   width: 100%;
   margin-top: 6px;
+}
+.payload-controls {
+  grid-template-columns: 1fr 1fr 1fr;
+}
+select {
+  background: #0c171c;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--text);
+  padding: 9px 8px;
+  min-width: 0;
 }
 /* The turbulence switch keeps the same label-above-control rhythm and the
    same row height as the number inputs beside it. */
@@ -878,10 +895,22 @@ select {
   flex-wrap: wrap;
   max-width: calc(100% - 40px);
 }
-.log-export {
-  width: 100%;
+.export-row {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
   margin-top: 15px;
+}
+.export-row .button {
+  padding: 9px 4px;
   font-size: 10px;
+}
+.legend-footprint {
+  width: 14px;
+  height: 10px;
+  margin-left: 8px;
+  background: #7bdad140;
+  border: 1px solid var(--cyan);
 }
 .attitude-instrument {
   position: absolute;
@@ -911,4 +940,258 @@ select {
     right: 12px;
     width: 72px;
   }
+}
+/* Preflight checklist: blocking failures in red, advisories in amber. */
+.checklist-panel,
+.events-panel {
+  border-top: 1px solid var(--line);
+  padding-top: 20px;
+  margin-top: 22px;
+}
+.checklist,
+.event-log {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+}
+.checklist li {
+  display: grid;
+  grid-template-columns: 16px 1fr;
+  column-gap: 8px;
+  padding: 7px 0;
+  border-bottom: 1px solid #26363d;
+  font-size: 11px;
+}
+.checklist li::before {
+  content: "✓";
+  grid-row: span 2;
+  color: var(--accent);
+  font-weight: 700;
+}
+.checklist li.warn::before {
+  content: "!";
+  color: #ffd27a;
+}
+.checklist li.fail::before {
+  content: "✕";
+  color: #ff8f7a;
+}
+.checklist li.pending,
+.event-log li.pending {
+  display: block;
+  color: var(--muted);
+  font-size: 10px;
+  border: 0;
+}
+.checklist li.pending::before {
+  content: none;
+}
+.checklist li small {
+  color: var(--muted);
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+}
+.checklist li.fail small {
+  color: #ffb09c;
+}
+.status.fail {
+  color: #ff8f7a;
+}
+.status.warn {
+  color: #ffd27a;
+}
+/* Battery gauge with the landing-reserve marker. */
+.battery-panel {
+  margin-top: 15px;
+  padding: 12px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+.battery-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+.battery-heading span {
+  font-size: 8px;
+  color: var(--muted);
+  letter-spacing: 1px;
+}
+.battery-heading strong {
+  font:
+    700 15px Manrope,
+    system-ui;
+  font-variant-numeric: tabular-nums;
+}
+.battery-bar {
+  position: relative;
+  height: 8px;
+  margin: 9px 0 8px;
+  background: #0c171c;
+  border-radius: 4px;
+  overflow: hidden;
+}
+.battery-bar span {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 100%;
+  background: var(--accent);
+  border-radius: 4px;
+  transition: width 0.2s;
+}
+.battery-bar span.low {
+  background: #ffd27a;
+}
+.battery-bar span.critical {
+  background: #ff8f7a;
+}
+.battery-bar i {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 25%;
+  width: 2px;
+  background: #ff8f7a;
+}
+.battery-status {
+  font-size: 9px;
+  color: var(--cyan);
+  font-variant-numeric: tabular-nums;
+}
+/* Flight log: past events dimmed, the latest one highlighted. */
+.event-log li {
+  display: grid;
+  grid-template-columns: 46px 1fr;
+  column-gap: 8px;
+  padding: 6px 4px;
+  border-radius: 4px;
+  font-size: 10px;
+  cursor: pointer;
+  color: var(--muted);
+}
+.event-log li:hover {
+  background: #1c2d34;
+}
+.event-log li time {
+  font-variant-numeric: tabular-nums;
+}
+.event-log li small {
+  grid-column: 2;
+  font-size: 9px;
+  opacity: 0.8;
+}
+.event-log li.done {
+  color: var(--text);
+}
+.event-log li.current {
+  color: var(--accent);
+  background: #b5ed8b12;
+}
+/* Gimbal camera view: 3:2 image frame, crosshair and readouts. */
+.gimbal-hud {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  font:
+    600 11px "DM Sans",
+    system-ui;
+  color: #f2f7ed;
+  text-shadow: 0 1px 2px #000a;
+}
+.gimbal-hud .hud-frame {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: min(78%, 117vh);
+  aspect-ratio: 3 / 2;
+  max-height: 78%;
+  transform: translate(-50%, -50%);
+  border: 1px solid #ffffff70;
+  box-shadow: 0 0 0 100vmax #0006;
+}
+.gimbal-hud .hud-cross {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 34px;
+  height: 34px;
+  transform: translate(-50%, -50%);
+  background:
+    linear-gradient(#f2f7ed, #f2f7ed) center / 1px 100% no-repeat,
+    linear-gradient(#f2f7ed, #f2f7ed) center / 100% 1px no-repeat;
+  opacity: 0.85;
+}
+.gimbal-hud .hud-top {
+  position: absolute;
+  top: 70px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 18px;
+  font-variant-numeric: tabular-nums;
+}
+.hud-rec {
+  color: #ff8f7a;
+  opacity: 0.35;
+  transition: opacity 0.1s;
+}
+.hud-rec.flash {
+  opacity: 1;
+}
+.gimbal-hud .hud-info {
+  position: absolute;
+  bottom: 175px;
+  left: 50%;
+  transform: translateX(-50%);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  background: #101b20b0;
+  padding: 6px 10px;
+  border-radius: 5px;
+}
+.map-area.gimbal-camera .attitude-instrument {
+  display: none;
+}
+@media (max-width: 650px) {
+  .payload-controls {
+    grid-template-columns: 1fr 1fr;
+  }
+  .gimbal-hud .hud-top {
+    top: 118px;
+  }
+  .gimbal-hud .hud-info {
+    bottom: 150px;
+    font-size: 9px;
+  }
+}
+/* An odd metric count leaves the last one spanning both columns. */
+.metric:last-child:nth-child(odd) {
+  grid-column: span 2;
+}
+.plan-stats strong.fail {
+  color: #ff8f7a;
+}
+.button.primary:disabled {
+  background: #1f3036;
+  color: var(--muted);
+}
+.button:disabled {
+  cursor: not-allowed;
+}
+/* Each swatch stays on the same line as its label when the legend wraps. */
+.legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+}
+.map-legend {
+  column-gap: 16px;
+  row-gap: 6px;
+}
+.legend-item .legend-line.actual,
+.legend-item .legend-footprint,
+.legend-item .legend-home {
+  margin-left: 0;
 }

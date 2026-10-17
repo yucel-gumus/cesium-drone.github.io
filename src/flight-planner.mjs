@@ -2,9 +2,23 @@ import { roundedPath, makeReference } from "./trajectory.mjs";
 import { replayAt, STRIDE } from "./quadrotor.mjs";
 import { rotate, clamp } from "./flight-math.mjs";
 export const FLIGHT_DEFAULTS = Object.freeze({
-  clearance: 70,
-  terrainMargin: 10,
-  trackingMargin: 5,
+  // Terrain following: nominal height above the highest ground across the
+  // sampled corridor, and the regulatory ceiling above the ground below.
+  agl: 80,
+  maxAgl: 120,
+  // Flown clearance may dip this far below `agl` (tracking, gusts) before
+  // the preflight check fails.
+  clearanceTolerance: 5,
+  // Look-ahead window (dilation) and Gaussian σ of the height profile, metres.
+  // Smoothing support (3σ) must stay inside the dilation window, which keeps
+  // the smoothed profile above the requirement everywhere.
+  profileDilation: 40,
+  profileSmoothing: 12,
+  // Climb/descent rates while following terrain in forward flight; the
+  // vertical take-off and landing rates are climbSpeed and descentSpeed.
+  followClimbRate: 3,
+  followDescentRate: 2.5,
+  verticalAcceleration: 1,
   sampleSpacing: 6,
   corridorHalfWidth: 12,
   cruiseSpeed: 8,
@@ -14,6 +28,9 @@ export const FLIGHT_DEFAULTS = Object.freeze({
   lateralAcceleration: 1.2,
   jerk: 2,
   landingOffset: 0.1,
+  landingCrawlHeight: 3,
+  landingSpeed: 0.35,
+  landingOvershoot: 2.5,
   turnTrim: 45,
   wind: 2,
 });
@@ -94,7 +111,9 @@ export function createTerrainRoute(C, data, options = {}) {
     if (!Number.isFinite(value) || value < 0 || (key !== "wind" && value === 0))
       throw new Error(`Geçersiz uçuş ayarı: ${key}`);
   if (
-    settings.clearance < 20 ||
+    settings.agl < 20 ||
+    settings.agl > 150 ||
+    3 * settings.profileSmoothing > settings.profileDilation ||
     settings.sampleSpacing > 20 ||
     settings.cruiseSpeed > 15 ||
     settings.wind > 8
@@ -178,6 +197,50 @@ export async function sampleTerrainRoute(
     throw new Error("Eksik arazi yüksekliği; uçuş hazırlanmadı.");
   return route;
 }
+// Terrain-following height profile over evenly spaced path knots. Each
+// knot's requirement is the corridor floor plus the target AGL. The profile
+//   1. dilates the requirement over ±profileDilation (look-ahead: climb before
+//      a ridge, descend only after it),
+//   2. raises points until the climb and descent slopes the cruise speed
+//      allows are respected (raise-only, so clearance is never reduced),
+//   3. smooths with a Gaussian truncated at 3σ ≤ profileDilation.
+// Averaging a raise-only, dilated sequence over a window no wider than the
+// dilation keeps every point at or above its own requirement, and averaging
+// cannot steepen slopes, so the result is smooth, flyable and safe.
+export function terrainFollowingProfile(requirement, spacing, settings) {
+  const n = requirement.length,
+    window = Math.max(1, Math.round(settings.profileDilation / spacing)),
+    sigma = settings.profileSmoothing / spacing,
+    support = Math.min(window, Math.ceil(3 * sigma));
+  const dilated = new Float64Array(n);
+  for (let i = 0; i < n; i++) {
+    let max = -Infinity;
+    for (let j = Math.max(0, i - window); j <= Math.min(n - 1, i + window); j++)
+      max = Math.max(max, requirement[j]);
+    dilated[i] = max;
+  }
+  const up = (settings.followClimbRate / settings.cruiseSpeed) * spacing,
+    down = (settings.followDescentRate / settings.cruiseSpeed) * spacing;
+  for (let i = n - 2; i >= 0; i--)
+    dilated[i] = Math.max(dilated[i], dilated[i + 1] - up);
+  for (let i = 1; i < n; i++)
+    dilated[i] = Math.max(dilated[i], dilated[i - 1] - down);
+  const weights = Array.from({ length: support + 1 }, (_, j) =>
+    Math.exp((-j * j) / (2 * sigma * sigma)),
+  );
+  const profile = new Float64Array(n);
+  for (let i = 0; i < n; i++) {
+    let sum = 0,
+      total = 0;
+    for (let j = -support; j <= support; j++) {
+      const w = weights[Math.abs(j)];
+      sum += w * dilated[clamp(i + j, 0, n - 1)];
+      total += w;
+    }
+    profile[i] = sum / total;
+  }
+  return profile;
+}
 export function buildMission(C, route) {
   if (route.samples.some((p) => !Number.isFinite(p.height)))
     throw new Error("Eksik arazi yüksekliği.");
@@ -199,19 +262,28 @@ export function buildMission(C, route) {
         new C.Cartesian3(),
       ).z,
   );
-  const cruiseHeight =
-    Math.max(...grounds) +
-    route.settings.clearance +
-    route.settings.terrainMargin +
-    route.settings.trackingMargin;
-  const reference = makeReference(route.path, cruiseHeight, route.settings);
-  const grid = new Map(),
-    cell = 30;
   const terrain = route.centers.map((index, i) => ({
+    index,
     p: route.path.table[index].p,
     z: grounds[i * 3],
     floor: Math.max(...grounds.slice(i * 3, i * 3 + 3)),
   }));
+  // Corridor floor at every path knot, linear between sampled stations.
+  const table = route.path.table,
+    requirement = new Float64Array(table.length);
+  for (let k = 1; k < terrain.length; k++) {
+    const a = terrain[k - 1],
+      b = terrain[k];
+    for (let i = a.index; i <= b.index; i++) {
+      const f = b.index > a.index ? (i - a.index) / (b.index - a.index) : 0;
+      requirement[i] = a.floor + (b.floor - a.floor) * f + route.settings.agl;
+    }
+  }
+  const spacing = table.length > 1 ? table[1].s - table[0].s : 1,
+    profile = terrainFollowingProfile(requirement, spacing, route.settings),
+    reference = makeReference(route.path, profile, route.settings);
+  const grid = new Map(),
+    cell = 30;
   terrain.forEach((x, i) => {
     const key = `${Math.floor(x.p[0] / cell)},${Math.floor(x.p[1] / cell)}`;
     if (!grid.has(key)) grid.set(key, []);
@@ -223,11 +295,9 @@ export function buildMission(C, route) {
     groundHeight,
     frame,
     reference,
+    profile,
+    requirement,
     duration: reference.duration,
-    minCruiseClearance:
-      route.settings.clearance +
-      route.settings.terrainMargin +
-      route.settings.trackingMargin,
     terrain,
     grid,
     cell,
@@ -274,30 +344,35 @@ export function terrainAt(mission, p) {
   // floor: highest ground across the sampled corridor at that station.
   return { height: ground, floor, distance: Math.sqrt(best) };
 }
+// Measures the flown trace against the terrain: the lowest clearance over
+// the corridor floor during the survey, the highest height above the ground
+// directly below at any airborne moment (regulatory ceiling) and the largest
+// distance from the sampled centre line. The preflight checklist judges them.
 export function attachSimulation(mission, simulation) {
   mission.simulation = simulation;
   mission.duration = simulation.duration;
-  let min = Infinity,
+  let minClearance = Infinity,
+    maxAgl = 0,
     maxDeviation = 0;
   for (let i = 0; i < simulation.rows; i++) {
     const r = i * STRIDE,
       phase = simulation.data[r + 30];
-    if (phase !== 2 && phase !== 3) continue;
-    const p = Array.from(simulation.data.slice(r + 1, r + 4)),
+    if (phase < 1 || phase > 5) continue;
+    const p = [
+        simulation.data[r + 1],
+        simulation.data[r + 2],
+        simulation.data[r + 3],
+      ],
       terrain = terrainAt(mission, p);
+    maxAgl = Math.max(maxAgl, p[2] - terrain.height);
+    if (phase !== 2 && phase !== 3) continue;
     // The flown trace may sit anywhere inside the corridor, so clearance is
     // measured against the corridor's highest sampled ground, not the centre.
-    min = Math.min(min, p[2] - terrain.floor);
+    minClearance = Math.min(minClearance, p[2] - terrain.floor);
     maxDeviation = Math.max(maxDeviation, terrain.distance);
-    if (
-      p[2] - terrain.floor < mission.settings.clearance ||
-      terrain.distance > mission.settings.corridorHalfWidth - 2
-    )
-      throw new Error(
-        "Dinamik uçuş arazi açıklığı/koridor denetimini geçemedi.",
-      );
   }
-  mission.minCruiseClearance = min;
+  mission.minClearance = minClearance;
+  mission.maxAgl = maxAgl;
   mission.maxCorridorDeviation = maxDeviation;
   return mission;
 }
@@ -313,8 +388,21 @@ export function evaluateMission(C, mission, seconds) {
     terrain = terrainAt(mission, state.p),
     forward = rotate(state.q, [1, 0, 0]);
   const [w, x, y, z] = state.q;
+  // Time left until the landing reserve at the mean current drawn so far.
+  const battery = mission.simulation.battery,
+    usedAh = (1 - state.battery.soc) * battery.capacityAh,
+    meanCurrent =
+      seconds > 5 ? (usedAh * 3600) / seconds : state.battery.current,
+    reserveAh = (state.battery.soc - battery.reserve) * battery.capacityAh;
   return {
     ...state,
+    navigationError: Math.hypot(
+      state.estimate[0] - state.p[0],
+      state.estimate[1] - state.p[1],
+      state.estimate[2] - state.p[2],
+    ),
+    remainingTime:
+      meanCurrent > 0 ? Math.max(0, (reserveAh * 3600) / meanCurrent) : 0,
     cartesian,
     position,
     agl: state.p[2] - terrain.height,

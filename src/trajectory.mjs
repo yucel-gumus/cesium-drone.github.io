@@ -98,9 +98,32 @@ export function roundedPath(points, trim = 45, spacing = 2) {
   return { pieces, table, length: distance };
 }
 
-export function makeReference(path, cruiseHeight, settings) {
+// Builds the time-parameterised reference the controller tracks. `profile`
+// is the survey height per path knot (ENU metres, see terrainFollowingProfile
+// in flight-planner.mjs) or one number for a constant height. The horizontal
+// speed plan, the terrain-following height and their derivatives share one
+// set of quintic segments, so position, velocity and acceleration stay
+// continuous in all three axes.
+export function makeReference(path, profile, settings) {
   const table = path.table,
     n = table.length;
+  const heights =
+    typeof profile === "number"
+      ? new Float64Array(n).fill(profile)
+      : Float64Array.from(profile);
+  if (heights.length !== n || !heights.every(Number.isFinite))
+    throw new Error("Dikey profil rota düğümleriyle eşleşmiyor.");
+  // Profile slope and curvature with respect to arc length (uniform knots).
+  const h = n > 1 ? table[1].s - table[0].s : 1,
+    slope = new Float64Array(n),
+    bend = new Float64Array(n);
+  for (let i = 1; i < n - 1; i++) {
+    slope[i] = (heights[i + 1] - heights[i - 1]) / (2 * h);
+    bend[i] = (heights[i + 1] - 2 * heights[i] + heights[i - 1]) / (h * h);
+  }
+  const verticalAcceleration = settings.verticalAcceleration ?? 1,
+    followClimb = settings.followClimbRate ?? settings.climbSpeed,
+    followDescent = settings.followDescentRate ?? settings.descentSpeed;
   let speeds = table.map((k) =>
     Math.min(
       settings.cruiseSpeed,
@@ -135,18 +158,23 @@ export function makeReference(path, cruiseHeight, settings) {
       speeds[i],
       Math.sqrt(speeds[i + 1] ** 2 + 2 * 0.65 * (table[i + 1].s - table[i].s)),
     );
-  function buildHorizontal() {
-    const accelerations = table.map((k, i) => {
+  function buildSurvey() {
+    const along = table.map((k, i) => {
       const a = Math.max(0, i - 1),
         b = Math.min(n - 1, i + 1);
-      const along =
-        (speeds[b] ** 2 - speeds[a] ** 2) / (2 * (table[b].s - table[a].s));
-      return [
-        along * k.tangent[0] - k.curvature * speeds[i] ** 2 * k.tangent[1],
-        along * k.tangent[1] + k.curvature * speeds[i] ** 2 * k.tangent[0],
-      ];
+      return (speeds[b] ** 2 - speeds[a] ** 2) / (2 * (table[b].s - table[a].s));
     });
-    accelerations[0] = accelerations[n - 1] = [0, 0];
+    const accelerations = table.map((k, i) => [
+      along[i] * k.tangent[0] - k.curvature * speeds[i] ** 2 * k.tangent[1],
+      along[i] * k.tangent[1] + k.curvature * speeds[i] ** 2 * k.tangent[0],
+      // z(t) = Z(s(t)): ż = Z' v, z̈ = Z'' v² + Z' s̈.
+      bend[i] * speeds[i] ** 2 + slope[i] * along[i],
+    ]);
+    accelerations[0] = [0, 0, 0];
+    accelerations[n - 1] = [0, 0, 0];
+    const velocity = (i, axis) =>
+      axis < 2 ? speeds[i] * table[i].tangent[axis] : speeds[i] * slope[i];
+    const position = (i, axis) => (axis < 2 ? table[i].p[axis] : heights[i]);
     let time = 0;
     const horizontal = [];
     for (let i = 1; i < n; i++) {
@@ -156,13 +184,13 @@ export function makeReference(path, cruiseHeight, settings) {
       horizontal.push({
         startTime: time,
         duration: T,
-        coefficients: [0, 1].map((axis) =>
+        coefficients: [0, 1, 2].map((axis) =>
           quintic(
-            a.p[axis],
-            speeds[i - 1] * a.tangent[axis],
+            position(i - 1, axis),
+            velocity(i - 1, axis),
             accelerations[i - 1][axis],
-            b.p[axis],
-            speeds[i] * b.tangent[axis],
+            position(i, axis),
+            velocity(i, axis),
             accelerations[i][axis],
             T,
           ),
@@ -172,23 +200,35 @@ export function makeReference(path, cruiseHeight, settings) {
     }
     return { horizontal, time };
   }
-  // Reduce speed locally around excessive jerk, preserving useful cruise
-  // speed on straights instead of slowing the entire mission for one bend.
-  for (let pass = 0; pass < 5; pass++) {
-    const { horizontal } = buildHorizontal();
+  // Demand of one evaluated sample against the limits, as a time-scale ratio:
+  // stretching time by k divides velocity by k, acceleration by k², jerk by k³.
+  const demand = (x, y, z, withVelocity) =>
+    Math.max(
+      withVelocity ? Math.hypot(x.v, y.v) / settings.cruiseSpeed : 1,
+      withVelocity
+        ? z.v > 0
+          ? z.v / followClimb
+          : -z.v / followDescent
+        : 1,
+      Math.sqrt(Math.hypot(x.a, y.a) / settings.acceleration),
+      Math.cbrt(Math.hypot(x.j, y.j) / settings.jerk),
+      Math.sqrt(Math.abs(z.a) / verticalAcceleration),
+      Math.cbrt(Math.abs(z.j) / settings.jerk),
+    );
+  // Reduce speed locally around excessive demand, preserving useful cruise
+  // speed on straights instead of slowing the entire mission for one bend
+  // or one ridge.
+  for (let pass = 0; pass < 6; pass++) {
+    const { horizontal } = buildSurvey();
     const factors = Array(n).fill(1);
     for (let i = 0; i < horizontal.length; i++) {
       const seg = horizontal[i];
       let ratio = 1;
       for (let k = 0; k <= 12; k++) {
-        const a = seg.coefficients.map((c) =>
+        const [x, y, z] = seg.coefficients.map((c) =>
           polynomial(c, k / 12, seg.duration),
         );
-        ratio = Math.max(
-          ratio,
-          Math.sqrt(Math.hypot(a[0].a, a[1].a) / settings.acceleration),
-          Math.cbrt(Math.hypot(a[0].j, a[1].j) / settings.jerk),
-        );
+        ratio = Math.max(ratio, demand(x, y, z, true));
       }
       if (ratio < 1.04) continue;
       for (let j = Math.max(1, i - 18); j < Math.min(n - 1, i + 20); j++) {
@@ -200,21 +240,16 @@ export function makeReference(path, cruiseHeight, settings) {
     if (Math.min(...factors) > 0.98) break;
     speeds = speeds.map((v, i) => v * factors[i]);
   }
-  const { horizontal, time } = buildHorizontal();
+  const { horizontal, time } = buildSurvey();
   // Retiming preserves geometry, C2 joins and all derivatives. Evaluate every
   // quintic densely and add headroom for the tracking controller.
   let scale = 1;
   for (const seg of horizontal)
     for (let k = 0; k <= 20; k++) {
-      const a = seg.coefficients.map((c) =>
+      const [x, y, z] = seg.coefficients.map((c) =>
         polynomial(c, k / 20, seg.duration),
       );
-      scale = Math.max(
-        scale,
-        Math.hypot(a[0].v, a[1].v) / settings.cruiseSpeed,
-        Math.sqrt(Math.hypot(a[0].a, a[1].a) / settings.acceleration),
-        Math.cbrt(Math.hypot(a[0].j, a[1].j) / settings.jerk),
-      );
+      scale = Math.max(scale, demand(x, y, z, true));
     }
   scale *= 1.03;
   horizontal.forEach((seg) => {
@@ -224,6 +259,8 @@ export function makeReference(path, cruiseHeight, settings) {
   const horizontalDuration = time * scale;
   const initialYaw = Math.atan2(table[0].tangent[1], table[0].tangent[0]);
   const finalYaw = Math.atan2(table.at(-1).tangent[1], table.at(-1).tangent[0]);
+  const startHeight = heights[0],
+    endHeight = heights[n - 1];
   const verticalDuration = (dz, speed) =>
     Math.max(
       3,
@@ -233,13 +270,13 @@ export function makeReference(path, cruiseHeight, settings) {
     );
   const phases = [];
   let clock = 0;
-  const append = (phase, duration, z0, z1, yaw) => {
+  const append = (phase, duration, z0, z1, yaw, v0 = 0, v1 = 0) => {
     phases.push({
       phase,
       startTime: clock,
       endTime: clock + duration,
       duration,
-      z: quintic(z0, 0, 0, z1, 0, 0, duration),
+      z: quintic(z0, v0, 0, z1, v1, 0, duration),
       yaw,
     });
     clock += duration;
@@ -247,9 +284,9 @@ export function makeReference(path, cruiseHeight, settings) {
   append("arming", 2, 0, 0, initialYaw);
   append(
     "takeoff",
-    verticalDuration(cruiseHeight, settings.climbSpeed),
+    verticalDuration(startHeight, settings.climbSpeed),
     0,
-    cruiseHeight,
+    startHeight,
     initialYaw,
   );
   const surveyStart = clock;
@@ -260,23 +297,53 @@ export function makeReference(path, cruiseHeight, settings) {
     duration: horizontalDuration,
   });
   clock += horizontalDuration;
-  append("settle", 4, cruiseHeight, cruiseHeight, finalYaw);
+  // Return-to-home landing as autopilots fly it: hold over home, descend to
+  // the crawl height, then descend at constant landing speed until the land
+  // detector (measured thrust and velocity, see control()) cuts the motors.
+  // The reference keeps going below the pad so position errors of the
+  // navigation solution cannot leave the vehicle hovering above ground.
+  const crawlHeight = settings.landingCrawlHeight ?? 3,
+    landingSpeed = settings.landingSpeed ?? 0.35,
+    overshoot = settings.landingOvershoot ?? 2.5,
+    ramp = 2,
+    rampEnd = crawlHeight - (landingSpeed * ramp) / 2;
+  append("settle", 4, endHeight, endHeight, finalYaw);
   append(
     "landing",
-    verticalDuration(cruiseHeight - 3, settings.descentSpeed),
-    cruiseHeight,
-    3,
+    verticalDuration(endHeight - crawlHeight, settings.descentSpeed),
+    endHeight,
+    crawlHeight,
     finalYaw,
   );
-  append("touchdown", 18, 3, -0.08, finalYaw);
-  append("disarm", 4, -0.08, -0.08, finalYaw);
+  append("touchdown", ramp, crawlHeight, rampEnd, finalYaw, 0, -landingSpeed);
+  append(
+    "touchdown",
+    (rampEnd + overshoot) / landingSpeed,
+    rampEnd,
+    -overshoot,
+    finalYaw,
+    -landingSpeed,
+    -landingSpeed,
+  );
+  append(
+    "disarm",
+    4,
+    -overshoot,
+    -overshoot - landingSpeed * 2,
+    finalYaw,
+    -landingSpeed,
+    0,
+  );
   return {
     horizontal,
     phases,
     duration: clock,
     surveyStart,
     horizontalDuration,
-    cruiseHeight,
+    profile: heights,
+    cruiseHeight: Math.max(...heights),
+    startHeight,
+    endHeight,
     initialYaw,
     finalYaw,
     timeScale: scale,
@@ -300,6 +367,8 @@ export function referenceAt(ref, time) {
       yaw: phase.yaw,
       yawRate: 0,
       phase: phase.phase,
+      phaseProgress: clamp((t - phase.startTime) / phase.duration, 0, 1),
+      phaseDuration: phase.duration,
     };
   }
   const local = t - ref.surveyStart;
@@ -313,12 +382,14 @@ export function referenceAt(ref, time) {
   }
   const seg = ref.horizontal[lo],
     u = clamp((local - seg.startTime) / seg.duration, 0, 1);
-  const [x, y] = seg.coefficients.map((c) => polynomial(c, u, seg.duration));
+  const [x, y, z] = seg.coefficients.map((c) =>
+    polynomial(c, u, seg.duration),
+  );
   const speed2 = x.v * x.v + y.v * y.v;
   return {
-    p: [x.p, y.p, ref.cruiseHeight],
-    v: [x.v, y.v, 0],
-    a: [x.a, y.a, 0],
+    p: [x.p, y.p, z.p],
+    v: [x.v, y.v, z.v],
+    a: [x.a, y.a, z.a],
     yaw:
       speed2 > 1e-8
         ? Math.atan2(y.v, x.v)

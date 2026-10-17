@@ -1,8 +1,7 @@
-// Portable browser regression for the production build, driven by Playwright
-// Chromium. It mirrors scripts/verify-browser.mjs check for check, with the
-// same order and thresholds, but needs no browser extension. Serve dist/
-// first (`npm run preview`); this script never starts a server, and no
-// credentials are written to the console or to the report.
+// Browser regression for the production build, driven by Playwright
+// Chromium against real Cesium World Terrain. Serve dist/ first
+// (`npm run preview`); this script never starts a server, and no credentials
+// are written to the console or to the report.
 import fs from "node:fs/promises";
 import path from "node:path";
 import assert from "node:assert/strict";
@@ -19,12 +18,18 @@ const TOKEN_KEY = "uzungol-ion-token";
 const WIND_LIMIT = "3.5";
 // Inputs that must stay locked while a plan is solved or a flight runs.
 const ENVIRONMENT_FIELDS = [
+  "aglInput",
   "massInput",
   "windInput",
   "seedInput",
   "turbulenceInput",
+  "gimbalInput",
+  "overlapInput",
+  "gnssInput",
   "planButton",
 ];
+const LOCKED = Array(ENVIRONMENT_FIELDS.length).fill(true),
+  UNLOCKED = Array(ENVIRONMENT_FIELDS.length).fill(false);
 // Terrain corridor sampling plus the 240 Hz physics solve may take this long.
 const READY_TIMEOUT = 100000;
 // Drone-relative bearing and pitch of each follow preset, as in src/main.js.
@@ -124,6 +129,25 @@ function installPageHelpers() {
     // Disabled flag of each environment field, in ENVIRONMENT_FIELDS order.
     environmentLocked: (ids) =>
       ids.map((id) => document.getElementById(id).disabled),
+    footprints: () => viewer.dataSources.getByName("footprints")[0],
+    // Text of the file an export button would download.
+    exported: async (id) => {
+      let captured;
+      const createObjectURL = URL.createObjectURL,
+        click = HTMLAnchorElement.prototype.click;
+      try {
+        URL.createObjectURL = (blob) => {
+          captured = blob;
+          return createObjectURL.call(URL, blob);
+        };
+        HTMLAnchorElement.prototype.click = () => {};
+        document.getElementById(id).click();
+      } finally {
+        URL.createObjectURL = createObjectURL;
+        HTMLAnchorElement.prototype.click = click;
+      }
+      return captured.text();
+    },
   };
 }
 
@@ -148,24 +172,26 @@ function observe(page, label) {
 const wait = (page, predicate, arg, timeout = 30000) =>
   page.waitForFunction(predicate, arg, { timeout, polling: 200 });
 const state = (page) => page.evaluate(() => droneSimulation.state);
-// Resolves once the mission is ready (optionally with the given clearance)
-// and fails fast with the page's own message when planning reports an error.
-async function waitPlanned(page, clearance) {
+// Resolves once planning settles (optionally with the given AGL and mass)
+// and fails fast with the page's own message unless the expected state
+// ("ready", or "blocked" for a plan the checklist rejects) is reached.
+async function waitPlanned(page, agl, expected = "ready", mass) {
   await wait(
     page,
-    (clearance) =>
-      (window.droneSimulation?.state === "ready" &&
-        (clearance === undefined ||
-          droneSimulation.mission.settings.clearance === clearance)) ||
+    ([agl, mass]) =>
+      (["ready", "blocked"].includes(window.droneSimulation?.state) &&
+        (agl === null || droneSimulation.mission.settings.agl === agl) &&
+        (mass === null ||
+          droneSimulation.mission.simulation.airframe.mass === mass)) ||
       !document.getElementById("mapError").hidden,
-    clearance,
+    [agl ?? null, mass ?? null],
     READY_TIMEOUT,
   );
   const status = await page.evaluate(() => ({
     state: window.droneSimulation?.state ?? "loading",
     message: document.getElementById("message").textContent,
   }));
-  assert.equal(status.state, "ready", status.message);
+  assert.equal(status.state, expected, status.message);
 }
 // Camera flights have finished and the terrain tiles of the view are loaded.
 const settleCamera = (page, timeout = 45000) =>
@@ -215,7 +241,10 @@ try {
       samples: m.samples.length,
       homeHeight: m.groundHeight,
       maxTerrain: Math.max(...m.samples.map((p) => p.height)),
-      minPlannedClearance: m.minCruiseClearance,
+      minClearance: m.minClearance,
+      maxAgl: m.maxAgl,
+      photos: droneSimulation.analysis.capture.photos.length,
+      footprints: __verify.footprints().entities.values.length,
       listeners: viewer.clock.onTick.numberOfListeners,
       entities: viewer.entities.values.length,
       metrics: m.simulation.metrics,
@@ -224,9 +253,49 @@ try {
   });
   assert.ok(initial.samples > 1000 && initial.duration > 600);
   assert.equal(initial.entities, 4);
+  assert.ok(initial.photos > 200);
+  assert.equal(initial.footprints, initial.photos);
   check(
     "Worker solves 240 Hz rigid-body flight with actual terrain under a nested deployment path",
     initial,
+  );
+
+  // Terrain following and the preflight checklist on real terrain.
+  const preflight = await page.evaluate(() => {
+    const m = droneSimulation.mission,
+      a = droneSimulation.analysis;
+    let below = Infinity;
+    for (let i = 0; i < m.profile.length; i++)
+      below = Math.min(below, m.profile[i] - m.requirement[i]);
+    return {
+      blocked: a.blocked,
+      failed: a.checks.filter((c) => !c.ok).map((c) => c.label),
+      listed: document.querySelectorAll("#checklist li[data-check]").length,
+      status: document.getElementById("checklistStatus").textContent,
+      profileMinusRequirement: below,
+      profileSpan: Math.max(...m.profile) - Math.min(...m.profile),
+      minClearance: m.minClearance,
+      maxAgl: m.maxAgl,
+      agl: m.settings.agl,
+      finalSoc: m.simulation.metrics.finalSoc,
+      navigationError: m.simulation.metrics.maxNavigationError,
+      events: document.querySelectorAll("#eventLog li[data-time]").length,
+    };
+  });
+  assert.equal(preflight.blocked, false);
+  assert.deepEqual(preflight.failed, []);
+  assert.equal(preflight.listed, 12);
+  assert.equal(preflight.status, "Tümü geçti");
+  assert.ok(preflight.profileMinusRequirement >= -1e-9);
+  assert.ok(preflight.profileSpan > 20);
+  assert.ok(preflight.minClearance >= preflight.agl - 5);
+  assert.ok(preflight.maxAgl <= 120);
+  assert.ok(preflight.finalSoc > 0.25);
+  assert.ok(preflight.navigationError < 0.2);
+  assert.ok(preflight.events >= 10);
+  check(
+    "Terrain-following plan passes all twelve preflight checks with RTK navigation and battery reserve",
+    preflight,
   );
 
   // Turbulence controls: defaults now, lock states at later moments, one check.
@@ -260,11 +329,11 @@ try {
     environment.defaults.summary.includes("Dryden") &&
       environment.defaults.summary.includes("tohum 1"),
   );
-  assert.deepEqual(environment.defaults.locked, Array(5).fill(false));
+  assert.deepEqual(environment.defaults.locked, UNLOCKED);
 
   const dynamics = await page.evaluate(() => {
     const log = droneSimulation.mission.simulation;
-    const STRIDE = 36;
+    const STRIDE = log.data.length / log.rows;
     let maxStep = 0,
       turnSamples = 0;
     for (let i = 1; i < log.rows; i++) {
@@ -300,35 +369,68 @@ try {
   );
 
   const csv = await page.evaluate(async () => {
-    let captured;
-    const createObjectURL = URL.createObjectURL,
-      click = HTMLAnchorElement.prototype.click;
-    try {
-      URL.createObjectURL = (blob) => {
-        captured = blob;
-        return createObjectURL.call(URL, blob);
-      };
-      HTMLAnchorElement.prototype.click = () => {};
-      document.getElementById("exportButton").click();
-    } finally {
-      URL.createObjectURL = createObjectURL;
-      HTMLAnchorElement.prototype.click = click;
-    }
-    const lines = (await captured.text()).trim().split("\n");
+    const lines = (await __verify.exported("exportCsvButton"))
+      .trim()
+      .split("\n");
     return {
       rows: lines.length - 1,
       columns: lines[0].split(",").length,
+      header: lines[0].split(",").slice(-8),
       firstTime: Number(lines[1].split(",")[0]),
       lastTime: Number(lines.at(-1).split(",")[0]),
     };
   });
   assert.ok(
     csv.rows > 5000 &&
-      csv.columns === 32 &&
+      csv.columns === 40 &&
       csv.firstTime === 0 &&
       csv.lastTime > initial.duration - 0.2,
   );
-  check("CSV exports the measured physical states at 10 Hz", csv);
+  assert.deepEqual(csv.header, [
+    "battery_soc",
+    "battery_v",
+    "battery_a",
+    "power_w",
+    "est_east_m",
+    "est_north_m",
+    "est_up_m",
+    "eph_m",
+  ]);
+  check("CSV exports physical, battery and navigation states at 10 Hz", csv);
+
+  const files = await page.evaluate(async () => {
+    const kml = await __verify.exported("exportKmlButton"),
+      plan = JSON.parse(await __verify.exported("exportPlanButton")),
+      geo = JSON.parse(await __verify.exported("exportGeojsonButton")),
+      xml = new DOMParser().parseFromString(kml, "application/xml");
+    return {
+      kmlParses: !xml.querySelector("parsererror"),
+      kmlPlacemarks: xml.getElementsByTagName("Placemark").length,
+      planType: plan.fileType,
+      planFirst: plan.mission.items[0].command,
+      planLast: plan.mission.items.at(-1).command,
+      planWaypoints: plan.mission.items.filter((i) => i.command === 16).length,
+      triggerDistance: plan.mission.items.find((i) => i.command === 206)
+        .params[0],
+      geoType: geo.type,
+      footprints: geo.features.filter((f) => f.properties.kind === "footprint")
+        .length,
+      photos: droneSimulation.analysis.capture.photos.length,
+    };
+  });
+  assert.equal(files.kmlParses, true);
+  assert.equal(files.kmlPlacemarks, files.photos + 3);
+  assert.equal(files.planType, "Plan");
+  assert.equal(files.planFirst, 22);
+  assert.equal(files.planLast, 20);
+  assert.ok(files.planWaypoints > 20);
+  assert.ok(files.triggerDistance > 10);
+  assert.equal(files.geoType, "FeatureCollection");
+  assert.equal(files.footprints, files.photos);
+  check(
+    "KML parses, QGroundControl plan and GeoJSON carry every waypoint and footprint",
+    files,
+  );
 
   const liveTerrain = await page.evaluate(async () => {
     const m = droneSimulation.mission;
@@ -352,7 +454,9 @@ try {
       allFinite: terrain.every((p) => Number.isFinite(p.height)),
     };
   });
-  assert.ok(liveTerrain.allFinite && liveTerrain.minAGL >= 70);
+  assert.ok(
+    liveTerrain.allFinite && liveTerrain.minAGL >= initial.minClearance - 10,
+  );
   check(
     "Independent terrain queries between route samples confirm clearance",
     liveTerrain,
@@ -384,13 +488,13 @@ try {
     (ids) => __verify.environmentLocked(ids),
     ENVIRONMENT_FIELDS,
   );
-  assert.deepEqual(environment.running, Array(5).fill(true));
+  assert.deepEqual(environment.running, LOCKED);
   await page.click("#pauseButton");
   environment.paused = await page.evaluate(
     (ids) => __verify.environmentLocked(ids),
     ENVIRONMENT_FIELDS,
   );
-  assert.deepEqual(environment.paused, Array(5).fill(true));
+  assert.deepEqual(environment.paused, LOCKED);
   const paused = await page.evaluate(() => ({
     time: __verify.elapsed(),
     frame: viewer.scene.frameState.frameNumber,
@@ -512,8 +616,64 @@ try {
     "Six drone-relative camera angles match measured ENU geometry and preserve zoom and selection",
     cameraViews,
   );
+  // Payload camera view: at the drone, stabilised to the gimbal pitch,
+  // footprints and the airframe hidden, HUD shown; overview restores all.
+  await page.click("#gimbalButton");
+  await settleCamera(page);
+  const gimbal = await page.evaluate(() => {
+    const C = Cesium,
+      sample = droneSimulation.evaluate(__verify.elapsed());
+    return {
+      mode: droneSimulation.cameraMode,
+      offset: C.Cartesian3.distance(viewer.camera.positionWC, sample.cartesian),
+      pitch: C.Math.toDegrees(viewer.camera.pitch),
+      headingError: Math.abs(
+        Math.atan2(
+          Math.sin(viewer.camera.heading - sample.heading),
+          Math.cos(viewer.camera.heading - sample.heading),
+        ),
+      ),
+      fov: C.Math.toDegrees(viewer.camera.frustum.fov),
+      footprintsShown: __verify.footprints().show,
+      modelShown: droneSimulation.drone.model.show.getValue(
+        viewer.clock.currentTime,
+      ),
+      hud: !document.getElementById("gimbalHud").hidden,
+      hudText: document.getElementById("hudPhoto").textContent,
+      inputs: viewer.scene.screenSpaceCameraController.enableInputs,
+    };
+  });
+  assert.equal(gimbal.mode, "gimbal");
+  assert.ok(gimbal.offset < 0.5, JSON.stringify(gimbal));
+  assert.ok(Math.abs(gimbal.pitch + 90) < 0.5, JSON.stringify(gimbal));
+  assert.ok(gimbal.headingError < 0.02);
+  assert.ok(Math.abs(gimbal.fov - 73.74) < 0.1);
+  assert.equal(gimbal.footprintsShown, false);
+  assert.equal(gimbal.modelShown, false);
+  assert.equal(gimbal.hud, true);
+  assert.match(gimbal.hudText, /^IMG \d{4} \/ \d{4}$/);
+  assert.equal(gimbal.inputs, false);
+  await page.screenshot({ path: path.join(artifacts, "gimbal-camera.png") });
   await page.click("#overviewButton");
-  check("Scrubbing and the two camera modes work independently of telemetry");
+  // Cesium disables camera input for the duration of the overview flight.
+  await settleCamera(page);
+  const restored = await page.evaluate(() => ({
+    fov: Math.round(Cesium.Math.toDegrees(viewer.camera.frustum.fov) * 100) / 100,
+    footprintsShown: __verify.footprints().show,
+    hud: !document.getElementById("gimbalHud").hidden,
+    inputs: viewer.scene.screenSpaceCameraController.enableInputs,
+  }));
+  assert.deepEqual(restored, {
+    fov: 60,
+    footprintsShown: true,
+    hud: false,
+    inputs: true,
+  });
+  check(
+    "Gimbal camera sits at the drone, looks at the commanded pitch with the sensor's field of view, and overview restores the map",
+    { gimbal, restored },
+  );
+  check("Scrubbing and the three camera modes work independently of telemetry");
 
   await page.click("#resetButton");
   await page.click("#startButton");
@@ -567,7 +727,7 @@ try {
   );
   check("Replay does not accumulate event listeners or entities");
 
-  await page.fill("#clearance", "90");
+  await page.fill("#aglInput", "90");
   await page.click("#planButton");
   // Planning starts synchronously on the click, well before the solve ends.
   environment.loading = await page.evaluate(
@@ -579,26 +739,59 @@ try {
   );
   assert.deepEqual(environment.loading, {
     state: "loading",
-    locked: Array(5).fill(true),
+    locked: LOCKED,
   });
   await waitPlanned(page, 90);
-  assert.ok(
-    await page.evaluate(
-      () => droneSimulation.mission.minCruiseClearance >= 100 - 1e-8,
-    ),
-  );
-  assert.equal(await page.evaluate(() => viewer.entities.values.length), 4);
+  const higher = await page.evaluate(() => ({
+    minClearance: droneSimulation.mission.minClearance,
+    entities: viewer.entities.values.length,
+    footprints: __verify.footprints().entities.values.length,
+    photos: droneSimulation.analysis.capture.photos.length,
+    spacing: droneSimulation.analysis.capture.spacing,
+  }));
+  assert.ok(higher.minClearance >= 85);
+  assert.equal(higher.entities, 4);
+  assert.equal(higher.footprints, higher.photos);
+  // Trigger spacing scales with height: 20% of a 90 m along-track footprint.
+  assert.ok(Math.abs(higher.spacing - 18) < 1e-6);
   check(
-    "Changing clearance rebuilds the terrain-aware mission without duplicates",
+    "Changing the target AGL rebuilds the terrain-following mission and its photo plan without duplicates",
+    higher,
   );
-  await page.fill("#clearance", "70");
+  // An overweight airframe drains the pack below the landing reserve: the
+  // checklist blocks the plan, which stays inspectable but not flyable.
+  await page.fill("#aglInput", "80");
+  await page.fill("#massInput", "3");
   await page.click("#planButton");
-  await waitPlanned(page, 70);
+  await waitPlanned(page, 80, "blocked", 3);
+  const blocked = await page.evaluate(() => ({
+    state: droneSimulation.state,
+    start: document.getElementById("startButton").disabled,
+    progress: document.getElementById("flightProgress").disabled,
+    failed: droneSimulation.analysis.checks
+      .filter((c) => c.blocking && !c.ok)
+      .map((c) => c.id),
+    status: document.getElementById("checklistStatus").textContent,
+    message: document.getElementById("message").textContent,
+  }));
+  assert.equal(blocked.start, true);
+  assert.equal(blocked.progress, false);
+  assert.ok(blocked.failed.includes("reserve"));
+  assert.match(blocked.status, /engel/);
+  await page.evaluate(() => __verify.setRange("flightProgress", "500"));
+  assert.equal(await state(page), "blocked");
+  check(
+    "Preflight checklist blocks an overweight plan below the battery reserve but keeps it inspectable",
+    blocked,
+  );
+  await page.fill("#massInput", "2");
+  await page.click("#planButton");
+  await waitPlanned(page, 80, "ready", 2);
   environment.ready = await page.evaluate(
     (ids) => __verify.environmentLocked(ids),
     ENVIRONMENT_FIELDS,
   );
-  assert.deepEqual(environment.ready, Array(5).fill(false));
+  assert.deepEqual(environment.ready, UNLOCKED);
   check(
     `Turbulence seed and switch default to 1/on, lock while planning or flying, and the wind field stops at the ${WIND_LIMIT} m/s authority limit`,
     environment,

@@ -120,7 +120,7 @@ test("reference is C2 at every knot and phase boundary", () => {
   for (let i = 1; i < ref.horizontal.length; i++) {
     const a = ref.horizontal[i - 1],
       b = ref.horizontal[i];
-    for (let axis = 0; axis < 2; axis++) {
+    for (let axis = 0; axis < 3; axis++) {
       const left = polynomial(a.coefficients[axis], 1, a.duration),
         right = polynomial(b.coefficients[axis], 0, b.duration);
       for (const key of ["p", "v", "a"]) near(left[key], right[key], 1e-6);
@@ -178,18 +178,28 @@ test("fly-through bends retain speed and have actual bank instead of yaw telepor
 });
 
 test("full force-driven flight tracks within one metre and lands by contact, without snapping home", () => {
-  const m = simulation.metrics;
+  const m = simulation.metrics,
+    s = mission.settings;
   assert.ok(m.maxTrackingError < 1);
+  // RTK navigation: centimetre landing, never an exact copy of home.
   assert.ok(m.landingError < 0.1 && m.landingError > 0.001);
-  assert.ok(m.contactSpeed < 0.25);
+  // Constant-speed final descent until the land detector fires.
+  assert.ok(Math.abs(m.contactSpeed - s.landingSpeed) < 0.1);
   assert.equal(m.disarmed, true);
+  // Disarm follows the first pad contact by less than two seconds.
+  let contact = Infinity;
+  for (let i = 0; i < simulation.rows && contact === Infinity; i++) {
+    const r = i * STRIDE;
+    if (simulation.data[r + 30] >= 6 && simulation.data[r + 3] <= 0.002)
+      contact = simulation.data[r];
+  }
+  assert.ok(m.disarmTime >= contact && m.disarmTime - contact < 2);
   near(m.finalSpeed, 0);
   assert.ok(m.maxRotorSpeed <= simulation.airframe.maxRotorSpeed + 1e-7);
   near(m.saturationSeconds, 0);
-  assert.ok(mission.minCruiseClearance >= mission.settings.clearance);
-  assert.ok(
-    mission.maxCorridorDeviation < mission.settings.corridorHalfWidth - 2,
-  );
+  assert.ok(mission.minClearance >= s.agl - s.clearanceTolerance);
+  assert.ok(mission.maxAgl <= s.maxAgl);
+  assert.ok(mission.maxCorridorDeviation < s.corridorHalfWidth - 2);
 });
 
 test("recorded airborne acceleration obeys Newton force balance and turns have roll", () => {
@@ -280,11 +290,14 @@ test("clearance is measured against the corridor's highest sampled ground, not t
   raised.samples.forEach((p, i) => (p.height = i % 3 === 0 ? 1150 : 1170));
   const m = buildMission(C, raised);
   attachSimulation(m, simulate(m.reference));
-  const margin = m.settings.terrainMargin + m.settings.trackingMargin;
-  assert.ok(m.minCruiseClearance >= m.settings.clearance);
-  assert.ok(m.minCruiseClearance <= m.settings.clearance + margin + 1e-6);
+  const s = m.settings;
+  // The profile follows the higher edges, so clearance over the corridor
+  // floor sits at the target while the centre line is 20 m further below.
+  assert.ok(m.minClearance >= s.agl - s.clearanceTolerance);
+  assert.ok(m.minClearance <= s.agl + 1);
   const sample = evaluateMission(C, m, m.reference.surveyStart + 200);
   near(sample.agl, sample.position.height - sample.terrainHeight, 1e-7);
+  assert.ok(Math.abs(sample.agl - (s.agl + 20)) < 1.5);
 });
 
 test("approximate MSL is ellipsoid height minus the geoid undulation, and optional", () => {

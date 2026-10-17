@@ -13,6 +13,16 @@ import {
   slerp,
 } from "./flight-math.mjs";
 import { referenceAt } from "./trajectory.mjs";
+import { makeRandom } from "./random.mjs";
+import {
+  BATTERY,
+  electricalPower,
+  batteryTerminal,
+  dischargeStep,
+  voltageAuthority,
+} from "./battery.mjs";
+import { makeNavigation } from "./navigation.mjs";
+export { makeRandom } from "./random.mjs";
 
 // Generic X quad, explicit engineering assumptions; not identified flight data.
 export const AIRFRAME = Object.freeze({
@@ -44,7 +54,13 @@ export const AIRFRAME = Object.freeze({
 // +SPIN × reactionRatio × thrust about +z. Front right and back left turn
 // counter-clockwise, as in the bundled model and the PX4 quad X layout.
 export const SPIN = Object.freeze([-1, 1, -1, 1]);
-export const STRIDE = 36;
+// Record row layout (STRIDE numbers per 30 Hz row):
+//  0 time · 1–3 position · 4–6 velocity · 7–10 quaternion · 11–13 body rates
+//  14–16 acceleration · 17–20 rotor speeds · 21 thrust · 22–24 torque
+//  25–27 wind · 28 distance · 29 tracking error · 30 phase · 31 saturated
+//  32–35 rotor angles · 36 state of charge · 37 pack voltage · 38 current
+//  39 electrical power · 40–42 estimated position · 43 EPH (1σ, m)
+export const STRIDE = 44;
 export const PHASE_NAMES = [
   "arming",
   "takeoff",
@@ -93,31 +109,6 @@ export function meanWind(wind = 0) {
 // Representative height for the Dryden scale lengths: the survey flies about
 // 300 ft (91 m) above ground.
 export const TURBULENCE_ALTITUDE = 300 * 0.3048;
-// mulberry32: a tiny portable 32-bit generator; the same seed gives the same
-// sequence on every engine. Box–Muller turns uniform pairs into standard
-// normals, keeping the second sample for the next call.
-export function makeRandom(seed = 1) {
-  let a = seed >>> 0,
-    spare = NaN;
-  const uniform = () => {
-    a = (a + 0x6d2b79f5) | 0;
-    let t = Math.imul(a ^ (a >>> 15), 1 | a);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-  const normal = () => {
-    if (!Number.isNaN(spare)) {
-      const z = spare;
-      spare = NaN;
-      return z;
-    }
-    const r = Math.sqrt(-2 * Math.log(1 - uniform())),
-      theta = 2 * Math.PI * uniform();
-    spare = r * Math.sin(theta);
-    return r * Math.cos(theta);
-  };
-  return { uniform, normal };
-}
 // MIL-F-8785C low-altitude Dryden intensities and scale lengths (valid for
 // 10–1000 ft). The specification is written in feet with h the height above
 // ground and W20 the mean wind at 20 ft; options.wind is used as W20:
@@ -250,11 +241,24 @@ export function wrench(motors, c = AIRFRAME) {
     torque: [dot(ys, f), -dot(xs, f), c.reactionRatio * dot(SPIN, f)],
   };
 }
-export function allocate(thrust, torque, c = AIRFRAME) {
+// Mechanical shaft power of the four rotors: rotor drag torque Q = κ f
+// (reaction ratio κ) times rotor speed.
+export function shaftPower(motors, c = AIRFRAME) {
+  const k = kf(c) * c.reactionRatio;
+  let sum = 0;
+  for (const w of motors) sum += k * w * w * Math.abs(w);
+  return sum;
+}
+export function allocate(
+  thrust,
+  torque,
+  c = AIRFRAME,
+  maxRotorSpeed = c.maxRotorSpeed,
+) {
   const a = c.armLength / Math.sqrt(2),
     xs = [a, -a, -a, a],
     ys = [-a, -a, a, a],
-    max = kf(c) * c.maxRotorSpeed ** 2;
+    max = kf(c) * maxRotorSpeed ** 2;
   const forces = xs.map(
     (x, i) =>
       thrust / 4 +
@@ -407,18 +411,66 @@ export function makeController(yaw) {
     yaw,
     yawRate: 0,
     disarmTime: null,
+    landTimer: 0,
+    // Navigation offset captured at the start of take-off (see control()).
+    anchor: null,
     previousDesired: null,
   };
 }
-export function control(state, ref, controller, dt, time, c = AIRFRAME) {
-  const p = Array.from(state.slice(0, 3)),
-    v = Array.from(state.slice(3, 6)),
+// `estimate` carries the navigation solution ({ position, velocity }) and
+// the voltage-limited top rotor speed; without it the controller sees truth.
+// Attitude and body rates come from an ideal AHRS in both cases.
+export function control(
+  state,
+  ref,
+  controller,
+  dt,
+  time,
+  c = AIRFRAME,
+  estimate = {},
+) {
+  const p = estimate.position
+      ? Array.from(estimate.position)
+      : Array.from(state.slice(0, 3)),
+    v = estimate.velocity
+      ? Array.from(estimate.velocity)
+      : Array.from(state.slice(3, 6)),
     q = Array.from(state.slice(6, 10)),
     w = Array.from(state.slice(10, 13));
+  // Take off from where the navigation solution says the vehicle is, as
+  // flight stacks do: the horizontal offset between estimate and plan at the
+  // start of take-off is held, then blended out with a smoothstep over the
+  // climb, so the vehicle leaves the pad vertically and joins the survey
+  // with a continuous reference.
+  if (ref.phase === "takeoff") {
+    controller.anchor ??= [p[0] - ref.p[0], p[1] - ref.p[1]];
+    const u = ref.phaseProgress,
+      blend = 1 - u * u * (3 - 2 * u),
+      rate = (-6 * u * (1 - u)) / ref.phaseDuration;
+    ref = {
+      ...ref,
+      p: [
+        ref.p[0] + controller.anchor[0] * blend,
+        ref.p[1] + controller.anchor[1] * blend,
+        ref.p[2],
+      ],
+      v: [
+        ref.v[0] + controller.anchor[0] * rate,
+        ref.v[1] + controller.anchor[1] * rate,
+        ref.v[2],
+      ],
+    };
+  }
   const error = sub(ref.p, p);
-  controller.integral = controller.integral.map((x, i) =>
-    clamp(x + error[i] * dt, -15, 15),
-  );
+  // On the pad, while arming or once the land detector suspects ground
+  // contact, there is no horizontal correction and no integration, so a
+  // navigation offset cannot wind up the integrators before lift-off. Once
+  // airborne the position loop holds the vehicle against the wind.
+  const groundPhase = ref.phase === "arming" || controller.landTimer > 0;
+  if (!groundPhase)
+    controller.integral = controller.integral.map((x, i) =>
+      clamp(x + error[i] * dt, -15, 15),
+    );
   let acc = ref.a.map(
     (x, i) =>
       x +
@@ -427,6 +479,10 @@ export function control(state, ref, controller, dt, time, c = AIRFRAME) {
       [0.2, 0.2, 0.35][i] * controller.integral[i],
   );
   acc[2] = clamp(acc[2], -3, 4);
+  if (groundPhase) {
+    acc[0] = 0;
+    acc[1] = 0;
+  }
   const maxHorizontal = Math.min(4, Math.tan(c.maxTilt) * (c.gravity + acc[2]));
   const horizontal = Math.hypot(acc[0], acc[1]);
   if (horizontal > maxHorizontal) {
@@ -488,21 +544,29 @@ export function control(state, ref, controller, dt, time, c = AIRFRAME) {
   );
   let thrust = c.mass * Math.max(0, dot(desiredForce, rotate(q, [0, 0, 1])));
   if (ref.phase === "arming") thrust = 0.2 * c.mass * c.gravity;
-  // Touchdown is detected from measured state, not the reference clock.
+  // Land detector in the style of flight stacks: during the landing descent
+  // the vehicle is on the ground once the collective thrust the controller
+  // asks for falls well below hover while the velocity stays near zero for a
+  // short while. Neither absolute height nor home position is used, so it
+  // works with an imperfect navigation solution.
   if (
     ["touchdown", "disarm"].includes(ref.phase) &&
-    p[2] < 0.012 &&
-    Math.hypot(p[0], p[1]) < 0.15 &&
-    norm(v) < 0.25 &&
     controller.disarmTime === null
-  )
-    controller.disarmTime = time;
+  ) {
+    const grounded =
+      thrust < 0.8 * c.mass * c.gravity &&
+      Math.abs(v[2]) < 0.15 &&
+      Math.hypot(v[0], v[1]) < 0.25;
+    controller.landTimer = grounded ? controller.landTimer + dt : 0;
+    if (controller.landTimer >= 0.3) controller.disarmTime = time;
+  }
   if (controller.disarmTime !== null)
     thrust *= clamp(1 - (time - controller.disarmTime) / 0.5, 0, 1);
   const output = allocate(
     thrust,
     controller.disarmTime !== null ? [0, 0, 0] : torque,
     c,
+    estimate.maxRotorSpeed ?? c.maxRotorSpeed,
   );
   return { ...output, referenceError: norm(error) };
 }
@@ -513,11 +577,17 @@ export function simulate(reference, options = {}, onProgress = () => {}) {
   const wind = options.wind ?? 2,
     seed = options.seed ?? 1,
     turbulence = options.turbulence ?? true,
+    gnssMode = options.gnss ?? "rtk",
+    battery = { ...BATTERY, ...options.battery },
     dt = 1 / c.physicsHz,
     recordEvery = c.physicsHz / c.recordHz,
     controlEvery = c.physicsHz / c.controlHz;
   // One wind sample per physics step, shared by the four RK4 stages.
   const gust = makeTurbulence(wind, { seed, turbulence });
+  const navigation = makeNavigation(gnssMode, seed);
+  let soc = 1,
+    pack = batteryTerminal(battery.avionicsPower, soc, battery),
+    power = battery.avionicsPower;
   let state = initialState(reference.initialYaw),
     commands = [0, 0, 0, 0],
     distance = 0,
@@ -531,6 +601,10 @@ export function simulate(reference, options = {}, onProgress = () => {}) {
   let rows = 0,
     lastAcceleration = new Float64Array(3),
     contact = false;
+  // Delta-velocity IMU: the navigation filter receives the mean acceleration
+  // over each control interval, not one physics step's sample.
+  const imuVelocity = [0, 0, 0],
+    imuAcceleration = [0, 0, 0];
   const metrics = {
     maxTrackingError: 0,
     maxGroundSpeed: 0,
@@ -544,6 +618,12 @@ export function simulate(reference, options = {}, onProgress = () => {}) {
     maxAirborneJerk: 0,
     saturationSeconds: 0,
     contactSpeed: 0,
+    energyWh: 0,
+    peakPower: 0,
+    minVoltage: pack.voltage,
+    batteryLimitedSeconds: 0,
+    maxNavigationError: 0,
+    maxEph: 0,
   };
   function record(t, ref) {
     const offset = rows++ * STRIDE,
@@ -558,18 +638,56 @@ export function simulate(reference, options = {}, onProgress = () => {}) {
     data[offset + 26] = gust.vector[1];
     data[offset + 27] = gust.vector[2];
     data[offset + 28] = distance;
-    data[offset + 29] = norm(sub(Array.from(state.slice(0, 3)), ref.p));
+    // The landing reference continues below the pad; on the ground the
+    // tracking error is measured against the reference clipped to the pad.
+    data[offset + 29] = Math.hypot(
+      state[0] - ref.p[0],
+      state[1] - ref.p[1],
+      state[2] - Math.max(0, ref.p[2]),
+    );
     data[offset + 30] = PHASE_NAMES.indexOf(ref.phase);
     data[offset + 31] = Number(output?.saturated ?? false);
     data.set(state.slice(17, 21), offset + 32);
+    data[offset + 36] = soc;
+    data[offset + 37] = pack.voltage;
+    data[offset + 38] = pack.current;
+    data[offset + 39] = power;
+    data[offset + 40] = navigation.position[0];
+    data[offset + 41] = navigation.position[1];
+    data[offset + 42] = navigation.position[2];
+    data[offset + 43] = navigation.eph;
   }
   record(0, referenceAt(reference, 0));
   for (let step = 0; step < count; step++) {
     const t = step * dt,
       ref = referenceAt(reference, t);
     if (step % controlEvery === 0) {
-      output = control(state, ref, controller, 1 / c.controlHz, t, c);
+      for (let i = 0; i < 3; i++) {
+        imuAcceleration[i] = (state[3 + i] - imuVelocity[i]) * c.controlHz;
+        imuVelocity[i] = state[3 + i];
+      }
+      navigation.step(
+        [state[0], state[1], state[2]],
+        [state[3], state[4], state[5]],
+        imuAcceleration,
+        1 / c.controlHz,
+      );
+      output = control(state, ref, controller, 1 / c.controlHz, t, c, {
+        position: navigation.position,
+        velocity: navigation.velocity,
+        maxRotorSpeed: c.maxRotorSpeed * voltageAuthority(pack.voltage, battery),
+      });
       commands = output.commands;
+      if (state[2] > 0.5)
+        metrics.maxNavigationError = Math.max(
+          metrics.maxNavigationError,
+          Math.hypot(
+            navigation.position[0] - state[0],
+            navigation.position[1] - state[1],
+            navigation.position[2] - state[2],
+          ),
+        );
+      metrics.maxEph = Math.max(metrics.maxEph, navigation.eph);
     }
     const before = state;
     state = rk4Step(state, commands, t, dt, c, gust.vector);
@@ -594,6 +712,20 @@ export function simulate(reference, options = {}, onProgress = () => {}) {
         state[0] = before[0];
         state[1] = before[1];
       }
+      // Landing gear on a rigid, level pad: pressed onto it the airframe
+      // cannot roll or pitch, and gear friction stops any rotation. Yaw is
+      // kept.
+      const yaw = Math.atan2(
+        2 * (state[6] * state[9] + state[7] * state[8]),
+        1 - 2 * (state[8] * state[8] + state[9] * state[9]),
+      );
+      state[6] = Math.cos(yaw / 2);
+      state[7] = 0;
+      state[8] = 0;
+      state[9] = Math.sin(yaw / 2);
+      state[10] = 0;
+      state[11] = 0;
+      state[12] = 0;
       contact = true;
     } else contact = false;
     // Scalar check: no per-step allocation in the 240 Hz loop.
@@ -611,7 +743,11 @@ export function simulate(reference, options = {}, onProgress = () => {}) {
     pz = state[2];
     metrics.maxTrackingError = Math.max(
       metrics.maxTrackingError,
-      Math.hypot(before[0] - ref.p[0], before[1] - ref.p[1], before[2] - ref.p[2]),
+      Math.hypot(
+        before[0] - ref.p[0],
+        before[1] - ref.p[1],
+        before[2] - Math.max(0, ref.p[2]),
+      ),
     );
     metrics.maxGroundSpeed = Math.max(
       metrics.maxGroundSpeed,
@@ -660,6 +796,15 @@ export function simulate(reference, options = {}, onProgress = () => {}) {
         ) / dt,
       );
     if (output.saturated) metrics.saturationSeconds += dt;
+    // Pack: shaft power through the propulsion efficiency plus avionics,
+    // Thevenin terminal voltage, Coulomb counting.
+    power = electricalPower(shaftPower(state.subarray(13, 17), c), battery);
+    pack = batteryTerminal(power, soc, battery);
+    soc = dischargeStep(soc, pack.current, dt, battery);
+    metrics.energyWh += (pack.voltage * pack.current * dt) / 3600;
+    metrics.peakPower = Math.max(metrics.peakPower, power);
+    metrics.minVoltage = Math.min(metrics.minVoltage, pack.voltage);
+    if (pack.limited) metrics.batteryLimitedSeconds += dt;
     lastAcceleration[0] = ax;
     lastAcceleration[1] = ay;
     lastAcceleration[2] = az;
@@ -680,9 +825,11 @@ export function simulate(reference, options = {}, onProgress = () => {}) {
   metrics.finalSpeed = norm(Array.from(state.slice(3, 6)));
   metrics.disarmed =
     controller.disarmTime !== null && Math.max(...state.slice(13, 17)) < 1;
+  metrics.disarmTime = controller.disarmTime;
+  metrics.finalSoc = soc;
   if (
     !metrics.disarmed ||
-    metrics.landingError > 0.2 ||
+    metrics.landingError > 5 ||
     metrics.finalSpeed > 0.05
   )
     throw new Error("İniş doğrulanamadı: kontrolcü hedefe yerleşemedi.");
@@ -694,6 +841,8 @@ export function simulate(reference, options = {}, onProgress = () => {}) {
     wind,
     seed,
     turbulence,
+    gnss: gnssMode,
+    battery,
     rows,
   };
 }
@@ -742,5 +891,13 @@ export function replayAt(sim, time) {
         ? "complete"
         : PHASE_NAMES[Math.round(row[30])],
     rotorAngles: row.slice(32, 36),
+    battery: {
+      soc: row[36],
+      voltage: row[37],
+      current: row[38],
+      power: row[39],
+    },
+    estimate: row.slice(40, 43),
+    eph: row[43],
   };
 }

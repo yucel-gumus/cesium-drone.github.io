@@ -16,6 +16,9 @@ import {
 } from "./drone-model.mjs";
 import "./style.css";
 import { AIRFRAME, SPIN, STRIDE } from "./quadrotor.mjs";
+import { analyzeMission, toGeodetic } from "./mission-analysis.mjs";
+import { groundSampleDistance, fieldOfView } from "./payload.mjs";
+import { toCSV, toKML, toQGCPlan, toGeoJSON } from "./exports.mjs";
 
 const C = globalThis.Cesium;
 // Bearings are relative to the drone's heading; negative pitch keeps the camera above it.
@@ -32,7 +35,10 @@ const buildToken = process.env.CESIUM_ION_TOKEN;
 // max in index.html: the highest 0.5 m/s step at which the full mission keeps
 // its tracking error under 1 m for every turbulence seed tried. See README.
 const WIND_LIMIT = 3.5;
-let viewer, mission, drone, provider;
+let viewer, mission, analysis, drone, provider;
+// Image footprints live in their own data source so the gimbal view can
+// hide them: the payload camera sees the ground, not the plan overlay.
+let footprints;
 let currentState = "loading";
 let cameraMode = "overview";
 let runId = 0;
@@ -49,16 +55,25 @@ let followHeading = 0,
   followRange = 8,
   targetFollowRange = 8,
   lastCameraFrame = 0;
+// Field of view and controller state to restore when leaving the gimbal view.
+let savedFov;
 
 const ui = new DroneUIController({
   start() {
-    if (!mission || currentState === "running" || currentState === "paused")
+    if (
+      !mission ||
+      analysis?.blocked ||
+      currentState === "running" ||
+      currentState === "paused"
+    )
       return;
     viewer.clock.currentTime = startTime.clone();
     setState("running");
     viewer.clock.shouldAnimate = true;
     setCamera("follow");
-    ui.message("Uçuş başladı. Drone araziye göre planlanan rotayı izliyor.");
+    ui.message(
+      "Uçuş başladı. Drone araziyi sabit AGL'de izliyor, kamera mesafeye göre tetikleniyor.",
+    );
     render();
   },
   pause() {
@@ -69,15 +84,15 @@ const ui = new DroneUIController({
     render();
   },
   reset() {
-    if (!mission) return;
+    if (!mission || analysis?.blocked) return;
     viewer.clock.shouldAnimate = false;
     viewer.clock.currentTime = startTime.clone();
     setState("ready");
     ui.message("Kalkış noktasında hazır. Keşif uçuşunu başlatabilirsiniz.");
     render();
   },
-  plan(clearance) {
-    prepareMission(clearance);
+  plan(agl) {
+    prepareMission(agl);
   },
   token(token) {
     if (!token) {
@@ -91,43 +106,44 @@ const ui = new DroneUIController({
     }
     ui.elements.ionToken.value = "";
     provider = undefined;
-    prepareMission(Number(ui.elements.clearance.value), token);
+    prepareMission(Number(ui.elements.aglInput.value), token);
   },
   seek(progress) {
-    if (!mission) return;
-    viewer.clock.shouldAnimate = false;
-    viewer.clock.currentTime = C.JulianDate.addSeconds(
-      startTime,
-      progress * mission.duration,
-      new C.JulianDate(),
-    );
-    setState(progress >= 1 ? "complete" : "paused");
-    render();
+    seekTo(progress * (mission?.duration ?? 0));
   },
+  seekTime: seekTo,
   rate(multiplier) {
     if (viewer) viewer.clock.multiplier = multiplier;
   },
   camera: setCamera,
   followView: setFollowView,
   followDistance: setFollowDistance,
-  export() {
-    if (!mission?.simulation) return;
-    const log = mission.simulation;
-    const lines = [
-      "time_s,east_m,north_m,up_m,v_e_ms,v_n_ms,v_u_ms,qw,qx,qy,qz,p_rads,q_rads,r_rads,a_e_ms2,a_n_ms2,a_u_ms2,m1_rads,m2_rads,m3_rads,m4_rads,thrust_N,torque_x_Nm,torque_y_Nm,torque_z_Nm,wind_e_ms,wind_n_ms,wind_u_ms,distance_m,tracking_error_m,phase_code,motor_saturated",
-    ];
-    for (let i = 0; i < log.rows; i += 3)
-      lines.push(
-        Array.from(log.data.slice(i * STRIDE, i * STRIDE + 32))
-          .map((x) => x.toFixed(6))
-          .join(","),
-      );
-    const url = URL.createObjectURL(
-      new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8" }),
-    );
+  export(kind) {
+    if (!mission?.simulation || !analysis) return;
+    const files = {
+      csv: () => [toCSV(mission), "text/csv;charset=utf-8", "csv"],
+      kml: () => [
+        toKML(C, mission, analysis),
+        "application/vnd.google-earth.kml+xml",
+        "kml",
+      ],
+      plan: () => [
+        JSON.stringify(toQGCPlan(C, mission, analysis), null, 2),
+        "application/json",
+        "plan",
+      ],
+      geojson: () => [
+        JSON.stringify(toGeoJSON(C, mission, analysis)),
+        "application/geo+json",
+        "geojson",
+      ],
+    };
+    if (!files[kind]) return;
+    const [content, type, extension] = files[kind]();
+    const url = URL.createObjectURL(new Blob([content], { type }));
     const a = document.createElement("a");
     a.href = url;
-    a.download = "uzungol-flight-log.csv";
+    a.download = `uzungol-kesif.${extension}`;
     a.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   },
@@ -136,6 +152,40 @@ const ui = new DroneUIController({
 function setState(state) {
   currentState = state;
   ui.setState(state);
+}
+// Scrubbing a blocked plan keeps it blocked: it can be inspected, not flown.
+function seekTo(seconds) {
+  if (!mission) return;
+  viewer.clock.shouldAnimate = false;
+  const t = Math.min(mission.duration, Math.max(0, seconds));
+  viewer.clock.currentTime = C.JulianDate.addSeconds(
+    startTime,
+    t,
+    new C.JulianDate(),
+  );
+  if (!analysis?.blocked)
+    setState(t >= mission.duration - 1e-6 ? "complete" : "paused");
+  render();
+}
+// Photos taken by `seconds`, the live ground sampling distance and the last
+// exposure time, for telemetry and the gimbal HUD.
+function payloadAt(sample) {
+  const photos = analysis.capture.photos;
+  let lo = 0,
+    hi = photos.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (photos[mid].time <= sample.elapsed) lo = mid + 1;
+    else hi = mid;
+  }
+  const pitch = (analysis.capture.pitchDegrees * Math.PI) / 180;
+  return {
+    taken: lo,
+    total: photos.length,
+    last: lo ? photos[lo - 1].time : null,
+    gsd: groundSampleDistance(Math.max(0, sample.agl) / Math.sin(-pitch)),
+    pitchDegrees: analysis.capture.pitchDegrees,
+  };
 }
 function elapsed(time = viewer.clock.currentTime) {
   return C.JulianDate.secondsDifference(time, startTime);
@@ -165,20 +215,36 @@ function render() {
     setState("complete");
     ui.message("Keşif tamamlandı. Drone kalktığı noktaya indi.");
   }
-  ui.render(sample, C);
+  ui.render(sample, C, payloadAt(sample));
 }
 
 function setCamera(mode) {
-  if (!viewer || !["overview", "follow"].includes(mode)) return;
-  if (mode === "follow" && cameraMode === "follow") return;
+  if (!viewer || !["overview", "follow", "gimbal"].includes(mode)) return;
+  if (mode !== "overview" && cameraMode === mode) return;
   viewer.camera.cancelFlight();
+  const leavingGimbal = cameraMode === "gimbal" && mode !== "gimbal";
   cameraMode = mode;
   viewer.trackedEntity = undefined;
   viewer.camera.lookAtTransform(C.Matrix4.IDENTITY);
   ui.setCamera(mode);
-  viewer.scene.screenSpaceCameraController.enableZoom = mode !== "follow";
-  viewer.camera.frustum.near = mode === "follow" ? 0.1 : 1;
-  if (!mission) return;
+  if (footprints) footprints.show = mode !== "gimbal";
+  const controller = viewer.scene.screenSpaceCameraController;
+  controller.enableZoom = mode === "overview";
+  controller.enableInputs = mode !== "gimbal";
+  viewer.camera.frustum.near = mode === "overview" ? 1 : 0.1;
+  if (mode === "gimbal") {
+    // Match the payload camera: the frustum's fov spans the canvas's longer
+    // side, so use the sensor's matching angle.
+    savedFov ??= viewer.camera.frustum.fov;
+    const fov = fieldOfView(),
+      canvas = viewer.canvas;
+    viewer.camera.frustum.fov =
+      canvas.clientWidth >= canvas.clientHeight ? fov.horizontal : fov.vertical;
+  } else if (leavingGimbal && savedFov !== undefined) {
+    viewer.camera.frustum.fov = savedFov;
+    savedFov = undefined;
+  }
+  if (!mission || mode === "gimbal") return;
   if (mode === "follow") {
     followHeading =
       sampleAt(viewer.clock.currentTime).heading + FOLLOW_VIEWS[followView].bearing;
@@ -186,10 +252,10 @@ function setCamera(mode) {
     followRange = 80;
   } else if (mode === "overview") {
     const bounds = C.BoundingSphere.fromPoints(
-      mission.path.table.map((k) =>
+      mission.path.table.map((k, i) =>
         C.Matrix4.multiplyByPoint(
           mission.frame,
-          new C.Cartesian3(k.p[0], k.p[1], mission.reference.cruiseHeight),
+          new C.Cartesian3(k.p[0], k.p[1], mission.profile[i]),
           new C.Cartesian3(),
         ),
       ),
@@ -327,10 +393,10 @@ async function withTimeout(promise, milliseconds, message) {
   }
 }
 
-async function prepareMission(clearance = 70, overrideToken) {
+async function prepareMission(agl = 80, overrideToken) {
   if (!viewer) return;
-  if (!Number.isFinite(clearance) || clearance < 30 || clearance > 150) {
-    ui.message("Arazi açıklığı 30–150 metre arasında olmalı.", true);
+  if (!Number.isFinite(agl) || agl < 30 || agl > 120) {
+    ui.message("Hedef yükseklik 30–120 m AGL arasında olmalı.", true);
     return;
   }
   const id = ++runId;
@@ -339,9 +405,11 @@ async function prepareMission(clearance = 70, overrideToken) {
   viewer.trackedEntity = undefined;
   cancelSolve?.();
   mission = undefined;
+  analysis = undefined;
   cachedSample = undefined;
   missionEntities.forEach((entity) => viewer.entities.remove(entity));
   missionEntities = [];
+  footprints?.entities.removeAll();
   ui.elements.mapError.hidden = true;
   ui.message("Gerçek arazi yükseklikleri yükleniyor…");
   try {
@@ -373,7 +441,10 @@ async function prepareMission(clearance = 70, overrideToken) {
     const mass = Number(ui.elements.massInput.value),
       wind = Number(ui.elements.windInput.value),
       seed = Number(ui.elements.seedInput.value),
-      turbulence = ui.elements.turbulenceInput.checked;
+      turbulence = ui.elements.turbulenceInput.checked,
+      gimbalPitch = Number(ui.elements.gimbalInput.value),
+      frontOverlap = Number(ui.elements.overlapInput.value) / 100,
+      gnss = ui.elements.gnssInput.value;
     if (
       !Number.isFinite(mass) ||
       mass < 1 ||
@@ -390,12 +461,22 @@ async function prepareMission(clearance = 70, overrideToken) {
       throw new Error(
         "Türbülans tohumu 0–4294967295 arasında bir tam sayı olmalı.",
       );
+    if (
+      !Number.isFinite(frontOverlap) ||
+      frontOverlap < 0.6 ||
+      frontOverlap > 0.9 ||
+      ![-90, -70, -60, -45].includes(gimbalPitch) ||
+      !["rtk", "standard"].includes(gnss)
+    )
+      throw new Error(
+        "Bindirme %60–90, gimbal −90…−45° ve navigasyon RTK/standart olmalı.",
+      );
     const route = createTerrainRoute(C, JSON.parse(waypointText), {
-      clearance,
+      agl,
       wind,
     });
     // Sample positions depend only on the waypoints and corridor constants, so
-    // re-planning with another clearance, mass or wind reuses the heights.
+    // re-planning with another height, mass, wind or payload reuses them.
     if (
       terrainCache?.provider === provider &&
       terrainCache.waypointText === waypointText &&
@@ -431,17 +512,24 @@ async function prepareMission(clearance = 70, overrideToken) {
       wind,
       seed,
       turbulence,
+      gnss,
     });
     if (id !== runId) return;
     attachSimulation(candidate, simulation);
+    const result = analyzeMission(C, candidate, { gimbalPitch, frontOverlap });
     mission = candidate;
+    analysis = result;
     cachedSample = undefined;
     cachedTime = undefined;
     installMission();
-    setState("ready");
-    ui.setMission(mission);
+    setState(analysis.blocked ? "blocked" : "ready");
+    ui.setMission(mission, analysis);
+    const failed = analysis.checks.filter((c) => c.blocking && !c.ok);
     ui.message(
-      `Dinamik uçuş doğrulandı. Keşifte en az ${mission.minCruiseClearance.toFixed(1)} m model açıklığı.`,
+      failed.length
+        ? `Görev onaylanmadı: ${failed.map((c) => c.label.toLocaleLowerCase("tr")).join(", ")}. Planı inceleyip parametreleri değiştirin.`
+        : `Görev onaylandı: ${analysis.coverage.count} fotoğraf, ortalama GSD ${(analysis.coverage.gsdMean * 100).toFixed(1)} cm, inişte batarya %${Math.round(simulation.metrics.finalSoc * 100)}.`,
+      failed.length > 0,
     );
     setCamera(cameraMode);
     render();
@@ -524,6 +612,9 @@ function installMission() {
     position,
     orientation,
     model: {
+      // The payload camera hangs under the airframe; hide the model in the
+      // gimbal view instead of rendering it from inside.
+      show: new C.CallbackProperty(() => cameraMode !== "gimbal", false),
       uri: new URL("./drone.glb", document.baseURI).href,
       scale: modelScale(armLength),
       minimumPixelSize: 0,
@@ -546,9 +637,7 @@ function installMission() {
     );
   const path = [
     world([0, 0, 0]),
-    ...mission.path.table.map((k) =>
-      world([...k.p, mission.reference.cruiseHeight]),
-    ),
+    ...mission.path.table.map((k, i) => world([...k.p, mission.profile[i]])),
     world([0, 0, 0]),
   ];
   add({
@@ -579,6 +668,29 @@ function installMission() {
       material: C.Color.fromCssColorString("#7bdad1"),
     },
   });
+  // Image footprints draped on the terrain; each appears when its photo is
+  // taken and stays until the end of the mission.
+  const footprintColor = C.Color.fromCssColorString("#7bdad1").withAlpha(0.09);
+  for (const photo of analysis.capture.photos) {
+    const corners = photo.corners.map((c) => {
+      const g = toGeodetic(C, mission, c);
+      return C.Cartesian3.fromDegrees(g.longitude, g.latitude);
+    });
+    footprints.entities.add({
+      name: `Görüntü izi ${photo.index}`,
+      availability: new C.TimeIntervalCollection([
+        new C.TimeInterval({
+          start: C.JulianDate.addSeconds(startTime, photo.time, new C.JulianDate()),
+          stop,
+        }),
+      ]),
+      polygon: {
+        hierarchy: corners,
+        material: footprintColor,
+        classificationType: C.ClassificationType.TERRAIN,
+      },
+    });
+  }
   const home = C.Cartographic.clone(mission.home);
   home.height += 0.015;
   add({
@@ -607,6 +719,9 @@ function installMission() {
   window.droneSimulation = Object.freeze({
     get mission() {
       return mission;
+    },
+    get analysis() {
+      return analysis;
     },
     get state() {
       return currentState;
@@ -638,7 +753,9 @@ function boot() {
       baseLayer: new C.ImageryLayer(
         new C.UrlTemplateImageryProvider({
           url: "https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
-          maximumLevel: 17,
+          // Level 18 (≈0.45 m/px at 40° N) is the finest Esri serves over
+          // Uzungöl; deeper levels return a "map data not yet available" tile.
+          maximumLevel: 18,
           credit:
             "Tiles © Esri — Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community",
         }),
@@ -657,6 +774,8 @@ function boot() {
       shadows: false,
     });
     window.viewer = viewer;
+    footprints = new C.CustomDataSource("footprints");
+    viewer.dataSources.add(footprints);
     viewer.scene.globe.depthTestAgainstTerrain = true;
     viewer.scene.globe.enableLighting = false;
     // A coarse pointer marks touch/mobile devices: a looser tile error keeps
@@ -688,8 +807,21 @@ function boot() {
       const now = performance.now(),
         dt = Math.min(0.1, (now - lastCameraFrame) / 1000);
       lastCameraFrame = now;
-      if (!mission?.simulation || cameraMode !== "follow") return;
+      if (!mission?.simulation || cameraMode === "overview") return;
       const sample = sampleAt(viewer.clock.currentTime);
+      if (cameraMode === "gimbal") {
+        // Stabilised gimbal: heading follows the airframe, pitch is the
+        // payload setting, roll is held level.
+        viewer.camera.setView({
+          destination: sample.cartesian,
+          orientation: {
+            heading: sample.heading,
+            pitch: C.Math.toRadians(analysis.capture.pitchDegrees),
+            roll: 0,
+          },
+        });
+        return;
+      }
       const preset = FOLLOW_VIEWS[followView];
       const targetHeading = sample.heading + preset.bearing;
       const delta = Math.atan2(
