@@ -1,9 +1,16 @@
+import { FAULTS, OPERATOR_COMMANDS } from "./failsafe.mjs";
+import { AIRFRAME, windLimit } from "./quadrotor.mjs";
+import { obstacleText } from "./obstacles.mjs";
+
 const PHASES = {
   ready: "Kalkışa hazır",
   blocked: "Görev onaylanmadı",
   arming: "Motorlar hazırlanıyor",
   takeoff: "Dikey kalkış",
   survey: "Keşif uçuşu · araziyi izliyor",
+  transit: "Görev alanına geçiş",
+  hold: "Konum tutma",
+  rtl: "Eve dönüş · RTL",
   return: "Kalkış noktasına dönüş",
   landing: "Kontrollü alçalma",
   settle: "Ev noktası üzerinde konum tutma",
@@ -19,6 +26,23 @@ export const formatDistance = (distance) =>
   distance >= 1000
     ? `${(distance / 1000).toFixed(2)} km`
     : `${Math.round(distance)} m`;
+// Mission card texts per mission type.
+const MISSION_TEXT = {
+  recon: {
+    title: "Keşif görevi",
+    stage: "Keşif",
+    description:
+      "Kıyıdan kalkış, sabit AGL'de araziyi izleyerek göl çevresinde fotoğraflı keşif, aynı noktaya otonom iniş.",
+    start: "Keşif uçuşunu başlat",
+  },
+  survey: {
+    title: "Alan haritalama",
+    stage: "Haritalama",
+    description:
+      "Göl ve kıyısını kaplayan poligon üzerinde ızgara (lawnmower) deseni: hatlar en uzun kenara paralel, aralık kameranın yan izi ve yan bindirmeden.",
+    start: "Haritalama uçuşunu başlat",
+  },
+};
 const escapeHtml = (s) =>
   String(s).replace(
     /[&<>"]/g,
@@ -41,8 +65,15 @@ export default class DroneUIController {
       ["exportKmlButton", "kml"],
       ["exportPlanButton", "plan"],
       ["exportGeojsonButton", "geojson"],
+      ["exportUlogButton", "ulog"],
     ])
       e[id].addEventListener("click", () => handlers.export(kind));
+    e.calibrationFile.addEventListener("change", () => {
+      const file = e.calibrationFile.files?.[0];
+      if (file) handlers.calibrate(file);
+    });
+    e.calibrationApply.addEventListener("click", () => handlers.applyCalibration(true));
+    e.calibrationReset.addEventListener("click", () => handlers.applyCalibration(false));
     e.planButton.addEventListener("click", () => {
       if (this.planInputs().every((input) => input.reportValidity()))
         handlers.plan(Number(e.aglInput.value));
@@ -77,11 +108,148 @@ export default class DroneUIController {
       const item = event.target.closest("li[data-time]");
       if (item) handlers.seekTime(Number(item.dataset.time));
     });
+    e.missionTypeInput.addEventListener("change", () => {
+      this.setMissionType(e.missionTypeInput.value);
+      this.syncInputs();
+    });
+    e.faultInput.addEventListener("change", () => this.syncInputs());
+    e.secondFaultInput.addEventListener("change", () => this.syncInputs());
+    e.sortieControls.addEventListener("click", (event) => {
+      const button = event.target.closest("button[data-sortie]");
+      if (button) handlers.sortie(Number(button.dataset.sortie));
+    });
+    e.operatorControls.addEventListener("click", (event) => {
+      const button = event.target.closest("button[data-command]");
+      if (button && !button.disabled) handlers.operator(button.dataset.command);
+    });
+    e.massInput.addEventListener("input", () => this.syncWindLimit());
+    this.setMissionType(e.missionTypeInput.value);
+    this.syncWindLimit();
+  }
+
+  // The wind field's upper bound follows the take-off mass (windLimit()).
+  syncWindLimit() {
+    const e = this.elements,
+      mass = Number(e.massInput.value);
+    if (!Number.isFinite(mass) || mass < 1 || mass > 3) return;
+    const limit = windLimit(this.airframeModel?.(mass) ?? { ...AIRFRAME, mass });
+    e.windInput.max = String(limit);
+    e.windLimitValue.textContent = limit.toLocaleString("tr", {
+      minimumFractionDigits: 1,
+    });
+  }
+
+  // Calibration panel: { busy } while identifying, { error }, or the
+  // identification result with its source and whether it is applied.
+  setCalibration(state) {
+    const e = this.elements,
+      box = e.calibrationResult;
+    this.calibrationState = state;
+    if (state.busy) {
+      box.textContent = `${state.source} tanılanıyor…`;
+      this.syncInputs();
+      return;
+    }
+    if (state.error) {
+      box.innerHTML = `<span class="error">${escapeHtml(state.error)}</span>`;
+      this.syncInputs();
+      return;
+    }
+    if (!state.result) {
+      box.textContent = "Kayıt yüklenmedi · nominal model.";
+      this.syncInputs();
+      return;
+    }
+    const { report, wind, aero } = state.result,
+      number = (x) =>
+        x === null || !Number.isFinite(x)
+          ? "—"
+          : Math.abs(x) >= 0.01 && Math.abs(x) < 1000
+            ? x.toLocaleString("tr", { maximumFractionDigits: 3 })
+            : x.toExponential(2).replace(".", ",");
+    box.innerHTML = `<p>${escapeHtml(state.source)} · ${aero.samples} uçuş örneği · ortalama rüzgâr ${Math.hypot(...wind).toFixed(1)} m/s · ${state.applied ? "<strong>uygulandı</strong>" : "uygulanmadı"}</p>
+      <table><thead><tr><th>Parametre</th><th>Nominal</th><th>Kestirim</th><th>Yarı farkı</th></tr></thead><tbody>${report
+        .map(
+          (r) =>
+            `<tr class="${r.applied ? "" : "skipped"}"><td>${escapeHtml(r.label)}</td><td>${number(r.nominal)}</td><td>${number(r.estimate)}${r.unit ? ` ${r.unit}` : ""}</td><td>${Number.isFinite(r.spread) ? `%${(r.spread * 100).toLocaleString("tr", { maximumFractionDigits: 1 })}` : "—"}${r.applied ? "" : " · tutulmadı"}</td></tr>`,
+        )
+        .join("")}</tbody></table>`;
+    this.syncInputs();
   }
 
   planInputs() {
     const e = this.elements;
-    return [e.aglInput, e.massInput, e.windInput, e.seedInput, e.overlapInput];
+    return [
+      e.aglInput,
+      e.massInput,
+      e.windInput,
+      e.seedInput,
+      e.overlapInput,
+      e.sideOverlapInput,
+      e.faultTimeInput,
+      e.secondFaultTimeInput,
+    ];
+  }
+
+  // Inputs locked while a plan is solved or flown; side overlap only
+  // applies to area surveys and the fault time only with a fault.
+  syncInputs() {
+    const e = this.elements,
+      locked = this.state === "loading" || ["running", "paused"].includes(this.state);
+    for (const input of [
+      ...this.planInputs(),
+      e.missionTypeInput,
+      e.turbulenceInput,
+      e.gimbalInput,
+      e.gnssInput,
+      e.faultInput,
+      e.secondFaultInput,
+      e.rtlTargetInput,
+      e.planButton,
+      e.tokenButton,
+      e.ionToken,
+    ])
+      input.disabled = locked;
+    if (e.missionTypeInput.value !== "survey") e.sideOverlapInput.disabled = true;
+    if (e.faultInput.value === "none") e.faultTimeInput.disabled = true;
+    if (e.secondFaultInput.value === "none")
+      e.secondFaultTimeInput.disabled = true;
+    // Applying or dropping a calibration re-plans: not while planning or
+    // flying.
+    const c = this.calibrationState ?? {};
+    e.calibrationApply.disabled = locked || c.busy || !c.result || c.applied;
+    e.calibrationReset.disabled = locked || c.busy || !c.applied;
+    e.calibrationFile.disabled = locked;
+    // Operator commands act on a flight being played.
+    const flying = ["running", "paused"].includes(this.state);
+    for (const button of e.operatorControls.querySelectorAll("button"))
+      button.disabled = !flying;
+  }
+
+  // Sortie selector of a multi-flight survey (hidden for one flight).
+  setSorties(count, index) {
+    const e = this.elements;
+    e.sortieControls.hidden = count < 2;
+    e.sortieControls.innerHTML =
+      count < 2
+        ? ""
+        : `<span>Batarya değişimli uçuşlar</span>${Array.from(
+            { length: count },
+            (_, k) =>
+              `<button type="button" data-sortie="${k}" class="${k === index ? "active" : ""}" aria-pressed="${k === index}">Uçuş ${k + 1}</button>`,
+          ).join("")}`;
+  }
+
+  // Mission card texts for a mission type (before and after planning).
+  setMissionType(type) {
+    const e = this.elements,
+      text = MISSION_TEXT[type] ?? MISSION_TEXT.recon;
+    e.missionTitle.textContent = text.title;
+    e.missionDescription.textContent = text.description;
+    document.querySelector('[data-phase="survey"]').lastChild.textContent =
+      text.stage;
+    this.missionType = type;
+    if (this.state) this.setState(this.state);
   }
 
   message(text, error = false) {
@@ -102,7 +270,7 @@ export default class DroneUIController {
     const flyable = planned && state !== "blocked";
     const active = state === "running" || state === "paused";
     e.startButton.disabled = !flyable || active;
-    e.startButton.innerHTML = `<span aria-hidden="true">↗</span> ${state === "complete" ? "Yeniden uçur" : state === "blocked" ? "Kontroller geçilmedi" : "Keşif uçuşunu başlat"}`;
+    e.startButton.innerHTML = `<span aria-hidden="true">↗</span> ${state === "complete" ? "Yeniden uçur" : state === "blocked" ? "Kontroller geçilmedi" : (MISSION_TEXT[this.missionType] ?? MISSION_TEXT.recon).start}`;
     e.pauseButton.disabled = !active;
     e.pauseButton.textContent = state === "paused" ? "Devam et" : "Duraklat";
     e.resetButton.disabled = !flyable;
@@ -112,18 +280,11 @@ export default class DroneUIController {
       "exportKmlButton",
       "exportPlanButton",
       "exportGeojsonButton",
+      "exportUlogButton",
     ])
       e[id].disabled = !planned;
-    for (const input of [
-      ...this.planInputs(),
-      e.turbulenceInput,
-      e.gimbalInput,
-      e.gnssInput,
-      e.planButton,
-      e.tokenButton,
-      e.ionToken,
-    ])
-      input.disabled = busy || active;
+    this.state = state;
+    this.syncInputs();
     e.connectionStatus.textContent = {
       loading: "Hazırlanıyor",
       ready: "Hazır",
@@ -150,11 +311,19 @@ export default class DroneUIController {
     const e = this.elements;
     this.mission = mission;
     this.analysis = analysis;
+    this.setMissionType(mission.type);
     const s = mission.simulation,
       m = s.metrics,
       c = s.airframe,
       b = s.battery,
-      cov = analysis.coverage;
+      cov = analysis.coverage,
+      sv = mission.survey,
+      faults = s.failsafe?.faults ?? [],
+      commands = s.failsafe?.commands ?? [];
+    e.legendArea.hidden = !sv;
+    e.legendFailsafe.hidden = !s.failsafe?.events.length;
+    e.legendRally.hidden = !mission.rally?.length;
+    e.legendObstacle.hidden = !mission.obstacles?.items.length;
     e.routeDistance.textContent = formatDistance(mission.horizontalDistance);
     e.routeDuration.textContent = formatTime(mission.duration);
     e.routePhotos.textContent = cov.count
@@ -170,10 +339,10 @@ export default class DroneUIController {
     const row = (k, v) => `<dt>${k}</dt><dd>${v}</dd>`;
     const navigation =
       s.gnss === "standard"
-        ? "Standart GNSS + IMU + baro"
+        ? "17 durumlu ESKF · standart GNSS + IMU + baro + manyetometre + sürükleme"
         : s.gnss === "ideal"
           ? "ideal durum"
-          : "RTK GNSS + IMU + baro";
+          : "17 durumlu ESKF · RTK GNSS + IMU + baro + manyetometre + sürükleme";
     e.physicsSummary.innerHTML = `<dl>${[
       row("Çözüm", `RK4 · ${c.physicsHz} Hz / kontrol ${c.controlHz} Hz`),
       row(
@@ -198,12 +367,73 @@ export default class DroneUIController {
         `${m.energyWh.toFixed(1)} Wh · tepe ${Math.round(m.peakPower)} W`,
       ),
       row("Navigasyon", navigation),
+      ...(s.gnss === "ideal"
+        ? []
+        : [
+            row(
+              "Yönelim kestirim hatası",
+              `eğim ≤ ${((m.maxTiltError * 180) / Math.PI).toFixed(2)}° · yön ≤ ${((m.maxHeadingError * 180) / Math.PI).toFixed(1)}°`,
+            ),
+          ]),
       row("Kamera", `1″ 20 MP · 8,8 mm · ${analysis.capture.pitchDegrees}°`),
       row(
         "Tetik aralığı",
         `${analysis.capture.spacing.toFixed(1)} m · %${Math.round(analysis.capture.overlap * 100)}`,
       ),
-      row("Ortalama rüzgâr", `${s.wind.toFixed(1)} m/s`),
+      row(
+        "Hava aracı modeli",
+        escapeHtml(mission.model ?? "nominal"),
+      ),
+      row(
+        "Görev tipi",
+        sv
+          ? `alan haritalama · ${(Math.abs(sv.areaM2) / 1e4).toFixed(1)} ha${sv.sortie.count > 1 ? ` · uçuş ${sv.sortie.index + 1}/${sv.sortie.count} (${sv.lines.length} hat)` : ""}`
+          : "çevre keşfi · nokta rotası",
+      ),
+      ...(sv
+        ? [
+            row(
+              "Izgara",
+              `${sv.count} hat · ${sv.spacing.toFixed(1)} m aralık · yan iz ${sv.swath.toFixed(0)} m`,
+            ),
+            row(
+              "Yan bindirme",
+              `hedef %${Math.round(sv.sideOverlap * 100)} · asgari %${Math.round(cov.minSideOverlap * 100)} · alanın %${(cov.areaCovered * 100).toFixed(1)}'i`,
+            ),
+          ]
+        : []),
+      row(
+        "Arıza senaryosu",
+        faults.length
+          ? faults
+              .map((f) => `${escapeHtml(FAULTS[f.type]?.label ?? f.type)} · ${formatTime(f.time)}`)
+              .join(" + ")
+          : "yok · failsafe'ler hazır",
+      ),
+      ...(commands.length
+        ? [
+            row(
+              "Operatör komutları",
+              commands
+                .map((c) => `${escapeHtml(OPERATOR_COMMANDS[c.action])} · ${formatTime(c.time)}`)
+                .join(" · "),
+            ),
+          ]
+        : []),
+      row(
+        "Engeller",
+        mission.obstacles?.items.length
+          ? `${mission.obstacles.items.length} engel (${mission.obstacleData?.snapshot ? `OSM ${mission.obstacleData.timestamp?.slice(0, 10) ?? ""}`.trim() : "rota dosyası"}) · en düşük açıklık ${Number.isFinite(mission.obstacleClearance?.clearance) ? `${Math.round(mission.obstacleClearance.clearance)} m — ${escapeHtml(obstacleText(mission.obstacleClearance.obstacle))}` : "tamponda engel yok"}`
+          : "engel verisi yok",
+      ),
+      row(
+        "Güvenli noktalar",
+        `kalkış${mission.rally?.length ? ` + ${mission.rally.length} rally (${mission.rally.map((r) => escapeHtml(r.name)).join(", ")})` : ""}`,
+      ),
+      row(
+        "Ortalama rüzgâr",
+        `${s.wind.toFixed(1)} m/s · yetki sınırı ${windLimit(c).toFixed(1)} m/s`,
+      ),
       row(
         "Dryden türbülansı",
         s.turbulence ? `açık · tohum ${s.seed}` : "kapalı",
@@ -214,25 +444,31 @@ export default class DroneUIController {
       row("Hareket bulanıklığı", `${cov.maxBlur.toFixed(2)} px`),
     ].join(
       "",
-    )}</dl><p>MIL-F-8785C Dryden türbülansı, sabit hava yoğunluğu, ideal AHRS, genel LiPo eğrisi ve noktasal zemin teması. Gerçek araç için tanımlanmış katsayılar veya PX4 SITL değildir.</p>`;
+    )}</dl><p>MIL-F-8785C Dryden türbülansı, yer etkisi, rotor sürüklemesi ve pala çırpması, VRS, sabit hava yoğunluğu, genel LiPo eğrisi ve noktasal zemin teması. Gerçek araç için tanımlanmış katsayılar veya PX4 SITL değildir.</p>`;
   }
 
+  // Plan checks first, then the injected fault's outcome under its own
+  // heading; the status counts the plan, with the scenario after it.
   setChecklist(checks) {
     const e = this.elements,
-      failed = checks.filter((c) => !c.ok && c.blocking).length,
-      warned = checks.filter((c) => !c.ok && !c.blocking).length;
-    e.checklist.innerHTML = checks
-      .map(
-        (c) =>
-          `<li class="${c.ok ? "ok" : c.blocking ? "fail" : "warn"}" data-check="${c.id}"><span>${escapeHtml(c.label)}</span><small>${escapeHtml(c.detail)}</small></li>`,
-      )
-      .join("");
-    e.checklistStatus.textContent = failed
-      ? `${failed} engel`
-      : warned
-        ? `${warned} uyarı`
-        : "Tümü geçti";
-    e.checklistStatus.className = `status${failed ? " fail" : warned ? " warn" : ""}`;
+      plan = checks.filter((c) => c.group !== "fault"),
+      scenario = checks.filter((c) => c.group === "fault"),
+      failed = plan.filter((c) => !c.ok && c.blocking).length,
+      warned = plan.filter((c) => !c.ok && !c.blocking).length,
+      faultWarned = scenario.filter((c) => !c.ok).length;
+    const item = (c) =>
+      `<li class="${c.ok ? "ok" : c.blocking ? "fail" : "warn"}" data-check="${c.id}"><span>${escapeHtml(c.label)}</span><small>${escapeHtml(c.detail)}</small></li>`;
+    e.checklist.innerHTML =
+      plan.map(item).join("") +
+      (scenario.length
+        ? `<li class="group" data-group="fault">Arıza senaryosu · arızalı çözüm</li>${scenario.map(item).join("")}`
+        : "");
+    e.checklistStatus.textContent =
+      (failed ? `${failed} engel` : warned ? `${warned} uyarı` : "Tümü geçti") +
+      (scenario.length
+        ? ` · senaryo ${faultWarned ? `${faultWarned} uyarı` : "temiz"}`
+        : "");
+    e.checklistStatus.className = `status${failed ? " fail" : warned || faultWarned ? " warn" : ""}`;
   }
 
   setEvents(events) {
@@ -240,7 +476,7 @@ export default class DroneUIController {
     this.elements.eventLog.innerHTML = events
       .map(
         (ev) =>
-          `<li data-time="${ev.time}"><time>${formatTime(ev.time)}</time><span>${escapeHtml(ev.label)}</span><small>${escapeHtml(ev.detail)}</small></li>`,
+          `<li data-time="${ev.time}"${ev.kind && ev.kind !== "info" ? ` class="${ev.kind}"` : ""}><time>${formatTime(ev.time)}</time><span>${escapeHtml(ev.label)}</span><small>${escapeHtml(ev.detail)}</small></li>`,
       )
       .join("");
     this.lastEventIndex = -2;
@@ -293,6 +529,11 @@ export default class DroneUIController {
     e.thrustStatus.textContent = `${sample.thrust.toFixed(1)} N`;
     e.trackingStatus.textContent = `${sample.trackingError.toFixed(2)} m`;
     e.windStatus.textContent = `${Math.hypot(...sample.wind).toFixed(1)} m/s`;
+    // Meteorological convention: the direction the wind blows from.
+    const [we, wn] = sample.windEstimate,
+      from = (((Math.atan2(-we, -wn) * 180) / Math.PI + 360) % 360).toFixed(0);
+    e.windEstimateStatus.textContent =
+      Math.hypot(we, wn) < 0.05 ? "sakin" : `${Math.hypot(we, wn).toFixed(1)} m/s · ${from}°`;
     e.motorStatus.textContent = sample.motors
       .map((w, i) => `M${i + 1} ${Math.round((w * 60) / (2 * Math.PI))}`)
       .join("  ·  ");
@@ -311,14 +552,22 @@ export default class DroneUIController {
     e.photoStatus.textContent = `${payload.taken} / ${payload.total}`;
     e.gsdStatus.textContent =
       sample.agl > 1 ? `${(payload.gsd * 100).toFixed(2)} cm` : "—";
-    // Navigation.
-    const gnss = this.mission.simulation.gnss;
-    e.gnssStatus.textContent =
-      gnss === "rtk"
+    // Navigation; an injected GNSS fault shows as dead reckoning.
+    const gnss = this.mission.simulation.gnss,
+      denied = (this.mission.simulation.failsafe?.faults ?? []).some(
+        (f) =>
+          f.type.startsWith("gnss") &&
+          sample.elapsed >= f.time &&
+          sample.elapsed < f.time + (f.duration ?? Infinity),
+      );
+    e.gnssStatus.textContent = denied
+      ? "FIX YOK · ölü hesap"
+      : gnss === "rtk"
         ? "RTK FIX · 24 uydu"
         : gnss === "standard"
           ? "3D FIX · 16 uydu"
           : "ideal";
+    e.gnssStatus.classList.toggle("alert", Boolean(denied));
     e.navStatus.textContent = `±${(sample.eph * 100).toFixed(0)} cm · hata ${(sample.navigationError * 100).toFixed(0)} cm`;
     // Battery.
     const battery = sample.battery,
@@ -330,10 +579,18 @@ export default class DroneUIController {
       soc < reserve ? "critical" : soc < reserve + 0.15 ? "low" : "";
     e.batteryStatus.textContent = `${battery.voltage.toFixed(2)} V · ${battery.current.toFixed(1)} A · ${Math.round(battery.power)} W · rezerve kadar ${formatTime(sample.remainingTime)}`;
     // Flight bar and phases.
-    e.flightPhase.textContent =
-      this.state === "paused"
-        ? `Duraklatıldı · ${PHASES[phase]}`
+    const failsafe = ["ready", "blocked"].includes(this.state)
+      ? null
+      : sample.failsafe;
+    // An area survey's imaging phase is a grid line, not reconnaissance.
+    const name =
+      phase === "survey" && this.mission.survey
+        ? "Alan haritalama · ızgara hattı"
         : PHASES[phase];
+    const label = failsafe ? `${name} — ⚠ ${failsafe}` : name;
+    e.flightPhase.textContent =
+      this.state === "paused" ? `Duraklatıldı · ${label}` : label;
+    e.flightPhase.classList.toggle("failsafe", Boolean(failsafe));
     e.flightTime.textContent = `${formatTime(sample.elapsed)} / ${formatTime(this.mission.duration)}`;
     e.flightProgress.value = String(Math.round(sample.progress * 1000));
     e.flightDistance.textContent = `${formatDistance(sample.traveled)} kat edildi`;
@@ -342,7 +599,11 @@ export default class DroneUIController {
         ? "takeoff"
         : ["settle", "touchdown", "disarm", "complete"].includes(phase)
           ? "landing"
-          : phase;
+          : ["transit", "hold"].includes(phase)
+            ? "survey"
+            : phase === "rtl"
+              ? "return"
+              : phase;
     document
       .querySelectorAll("[data-phase]")
       .forEach((el) =>

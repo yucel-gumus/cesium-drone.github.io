@@ -42,6 +42,9 @@ import {
 const data = JSON.parse(
   fs.readFileSync(new URL("../public/points.json", import.meta.url)),
 );
+const obstacles = JSON.parse(
+  fs.readFileSync(new URL("../public/obstacles.json", import.meta.url)),
+);
 const near = (a, b, t = 1e-6) =>
   assert.ok(Math.abs(a - b) <= t, `${a} != ${b} (±${t})`);
 // Synthetic relief: a 60 m ridge, a 40 m dip and a north–south slope.
@@ -56,7 +59,7 @@ const hilly = (p) => {
   );
 };
 function plan(heightAt, options = {}, simOptions = {}) {
-  const route = createTerrainRoute(C, data, options);
+  const route = createTerrainRoute(C, data, options, { obstacles });
   route.samples.forEach((p, i) => (p.height = heightAt(p, i)));
   const mission = buildMission(C, route);
   attachSimulation(mission, simulate(mission.reference, simOptions));
@@ -297,7 +300,11 @@ test("exports: KML, QGroundControl plan, GeoJSON and CSV are complete and consis
       kml.split(`</${tag}>`).length,
       tag,
     );
-  assert.equal(kml.split("<Placemark>").length - 1, result.capture.photos.length + 3);
+  // Home, planned route, flown track, the rally points and every photo.
+  assert.equal(
+    kml.split("<Placemark>").length - 1,
+    result.capture.photos.length + 3 + ridge.rally.length,
+  );
   const plan = toQGCPlan(C, ridge, result);
   const items = plan.mission.items;
   assert.equal(plan.fileType, "Plan");
@@ -396,4 +403,21 @@ test("an offset navigation fix cannot tip the airframe on the pad, saturate the 
   assert.ok(drift < 2.5, `drift below 10 m: ${drift}`);
   assert.ok(sim.metrics.saturationSeconds <= 0.5);
   assert.ok(sim.metrics.maxTrackingError < 3);
+});
+
+test("an airframe that runs out of authority before touchdown is blocked by the checklist, not reported as a solver failure", () => {
+  const mass = 3,
+    heavy = { ...AIRFRAME, mass, inertia: AIRFRAME.inertia.map((x) => (x * mass) / 2) },
+    // A pack just large enough to reach home: the sagging voltage costs rotor
+    // authority on the final descent and the landing does not settle.
+    mission = plan(hilly, {}, { airframe: heavy, battery: { ...BATTERY, capacityAh: 5.75 } });
+  const m = mission.simulation.metrics;
+  assert.equal(m.landingCompleted, false);
+  assert.ok(m.finalSoc < 0.05 || m.saturationSeconds > 0.5, `${m.finalSoc} ${m.saturationSeconds}`);
+  const analysis = analyzeMission(C, mission),
+    landing = analysis.checks.find((c) => c.id === "landing");
+  assert.equal(analysis.blocked, true);
+  assert.equal(landing.ok, false);
+  assert.equal(landing.blocking, true);
+  assert.match(landing.detail, /^iniş tamamlanamadı/);
 });

@@ -1,10 +1,15 @@
 /* global Cesium */
 import {
   createTerrainRoute,
+  surveySorties,
+  sortieLimit,
   sampleTerrainRoute,
   buildMission,
   evaluateMission,
   attachSimulation,
+  terrainForWorker,
+  terrainAt,
+  obstaclesAlongPath,
 } from "./flight-planner.mjs";
 import DroneUIController from "./ui-controller.js";
 import { createPositionProperty } from "./position-property.mjs";
@@ -15,10 +20,15 @@ import {
   modelGroundOffset,
 } from "./drone-model.mjs";
 import "./style.css";
-import { AIRFRAME, SPIN, STRIDE } from "./quadrotor.mjs";
-import { analyzeMission, toGeodetic } from "./mission-analysis.mjs";
+import { AIRFRAME, SPIN, STRIDE, windLimit } from "./quadrotor.mjs";
+import { analyzeMission, planPhotos, toGeodetic } from "./mission-analysis.mjs";
+import { BATTERY } from "./battery.mjs";
 import { groundSampleDistance, fieldOfView } from "./payload.mjs";
-import { toCSV, toKML, toQGCPlan, toGeoJSON } from "./exports.mjs";
+import { toCSV, toKML, toQGCPlan, toGeoJSON, toULog } from "./exports.mjs";
+import { fromCSV, fromULog, identify } from "./sysid.mjs";
+import { FAULTS } from "./failsafe.mjs";
+import { obstacleText } from "./obstacles.mjs";
+import { formatTime, formatDistance } from "./ui-controller.js";
 
 const C = globalThis.Cesium;
 // Bearings are relative to the drone's heading; negative pitch keeps the camera above it.
@@ -31,11 +41,29 @@ const FOLLOW_VIEWS = {
   diagonal: { bearing: Math.PI / 4, pitch: -0.6 },
 };
 const buildToken = process.env.CESIUM_ION_TOKEN;
-// Mean-wind authority limit of the 2 kg profile (m/s), the same as windInput
-// max in index.html: the highest 0.5 m/s step at which the full mission keeps
-// its tracking error under 1 m for every turbulence seed tried. See README.
-const WIND_LIMIT = 3.5;
 let viewer, mission, analysis, drone, provider;
+// A multi-flight survey: every sortie's { mission, analysis }; `mission`
+// and `analysis` are the selected one.
+let sorties = [],
+  sortieIndex = 0,
+  // Planned photos of all sorties, for the survey's area coverage.
+  surveyPhotos;
+// Calibration from a flight log (sysid.mjs): the identification result and
+// whether the planner flies the calibrated airframe and battery.
+let calibration = null,
+  calibrationApplied = false;
+// Airframe for a take-off mass: nominal with inertia scaled by mass, or the
+// calibrated one (identified at the log's mass) scaled the same way.
+function airframeFor(mass) {
+  const base = calibrationApplied ? calibration.result.airframe : AIRFRAME,
+    from = calibrationApplied ? calibration.mass : 2;
+  return { ...base, mass, inertia: base.inertia.map((x) => (x * mass) / from) };
+}
+const batteryModel = () => (calibrationApplied ? calibration.result.battery : BATTERY);
+// Obstacles near the route (buildings, masts, tree rows) in their own data
+// source; the OSM snapshot is loaded once.
+let obstacleLayer,
+  obstacleSnapshot;
 // Image footprints live in their own data source so the gimbal view can
 // hide them: the payload camera sees the ground, not the plan overlay.
 let footprints;
@@ -46,7 +74,9 @@ let startTime;
 let lastUiUpdate = 0;
 let missionEntities = [];
 let cancelSolve;
-// Sampled terrain heights for the current waypoint file and terrain provider.
+// Sampled terrain heights by position for the current terrain provider, so
+// re-plans (another height, side overlap or mission type) query only the
+// positions they have not seen.
 let terrainCache;
 let cachedSample, cachedTime;
 let followHeading = 0,
@@ -72,7 +102,9 @@ const ui = new DroneUIController({
     viewer.clock.shouldAnimate = true;
     setCamera("follow");
     ui.message(
-      "Uçuş başladı. Drone araziyi sabit AGL'de izliyor, kamera mesafeye göre tetikleniyor.",
+      mission.survey
+        ? "Haritalama uçuşu başladı. Izgara hatları sabit AGL'de uçuluyor, kamera mesafeye göre tetikleniyor."
+        : "Uçuş başladı. Drone araziyi sabit AGL'de izliyor, kamera mesafeye göre tetikleniyor.",
     );
     render();
   },
@@ -112,12 +144,46 @@ const ui = new DroneUIController({
     seekTo(progress * (mission?.duration ?? 0));
   },
   seekTime: seekTo,
+  operator: operatorCommand,
+  sortie: selectSortie,
   rate(multiplier) {
     if (viewer) viewer.clock.multiplier = multiplier;
   },
   camera: setCamera,
   followView: setFollowView,
   followDistance: setFollowDistance,
+  // Identifies the airframe from a flight log (PX4 .ulg or the simulator's
+  // CSV) at the current take-off mass.
+  async calibrate(file) {
+    const source = file.name;
+    ui.setCalibration({ busy: true, source });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    try {
+      const mass = Number(ui.elements.massInput.value);
+      if (!Number.isFinite(mass) || mass < 1 || mass > 3)
+        throw new Error("Kalkış kütlesi 1–3 kg arasında olmalı.");
+      const bytes = new Uint8Array(await file.arrayBuffer()),
+        ulog = bytes[0] === 0x55 && bytes[1] === 0x4c && bytes[2] === 0x6f && bytes[3] === 0x67,
+        parsed = ulog ? fromULog(bytes) : { rows: fromCSV(new TextDecoder().decode(bytes)) },
+        nominal = { ...AIRFRAME, mass, inertia: AIRFRAME.inertia.map((x) => (x * mass) / 2) },
+        result = identify(parsed.rows, nominal, BATTERY, {
+          ...(Number.isFinite(parsed.airDensity) && { airDensity: parsed.airDensity }),
+        });
+      calibration = { source, mass, result };
+      calibrationApplied = false;
+      ui.setCalibration({ source, result, applied: false });
+    } catch (error) {
+      ui.setCalibration({ error: `${source}: ${error.message}`, applied: calibrationApplied });
+    }
+  },
+  applyCalibration(on) {
+    if (on && !calibration) return;
+    calibrationApplied = on;
+    ui.syncWindLimit();
+    if (calibration) ui.setCalibration({ ...calibration, applied: on });
+    else ui.setCalibration({});
+    prepareMission(Number(ui.elements.aglInput.value));
+  },
   export(kind) {
     if (!mission?.simulation || !analysis) return;
     const files = {
@@ -137,17 +203,19 @@ const ui = new DroneUIController({
         "application/geo+json",
         "geojson",
       ],
+      ulog: () => [toULog(mission), "application/octet-stream", "ulg"],
     };
     if (!files[kind]) return;
     const [content, type, extension] = files[kind]();
     const url = URL.createObjectURL(new Blob([content], { type }));
     const a = document.createElement("a");
     a.href = url;
-    a.download = `uzungol-kesif.${extension}`;
+    a.download = `uzungol-${mission.survey ? "haritalama" : "kesif"}${sorties.length > 1 ? `-ucus${sortieIndex + 1}` : ""}.${extension}`;
     a.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   },
 });
+ui.airframeModel = airframeFor;
 
 function setState(state) {
   currentState = state;
@@ -213,7 +281,19 @@ function render() {
   if (sample.phase === "complete" && currentState === "running") {
     viewer.clock.shouldAnimate = false;
     setState("complete");
-    ui.message("Keşif tamamlandı. Drone kalktığı noktaya indi.");
+    const m = mission.simulation.metrics;
+    ui.message(
+      m.landingSite === "field"
+        ? `Uçuş failsafe ile bitti: drone evden ${formatDistance(m.homeDistance)} uzakta yerinde indi.`
+        : m.landingSite === "rally"
+          ? `Uçuş rally noktasında (${m.landingName}) bitti.`
+          : mission.simulation.failsafe?.returnReason ||
+              mission.simulation.failsafe?.operator
+            ? "Görev failsafe ya da operatör komutuyla kesildi; drone eve dönüp kalktığı noktaya indi."
+            : mission.survey
+              ? "Haritalama tamamlandı. Drone kalktığı noktaya indi."
+              : "Keşif tamamlandı. Drone kalktığı noktaya indi.",
+    );
   }
   ui.render(sample, C, payloadAt(sample));
 }
@@ -341,41 +421,58 @@ function initializeFollowZoom() {
   canvas.addEventListener("touchcancel", endPinch);
 }
 
-function solveDynamics(reference, options) {
+// Solves flights in Web Workers, one per job ({ reference, options }), in
+// parallel; resolves with the simulations in job order. A failed job
+// resolves to its Error when `tolerant` is set (the fault rehearsal must
+// not sink a valid plan).
+function solveDynamics(jobs, tolerant = []) {
   cancelSolve?.();
-  const worker = new Worker(
-    new URL("./simulation-worker.mjs", import.meta.url),
+  const workers = jobs.map(
+    () => new Worker(new URL("./simulation-worker.mjs", import.meta.url)),
   );
-  return withTimeout(
+  const progress = jobs.map(() => 0);
+  let cancelled = false;
+  const cancel = () => {
+    cancelled = true;
+    workers.forEach((w) => w.terminate());
+  };
+  cancelSolve = cancel;
+  const solve = (job, i) =>
     new Promise((resolve, reject) => {
-      // A newer plan supersedes this solve: stop the worker and settle now
-      // instead of leaving the promise pending until the timeout.
-      cancelSolve = Object.assign(
-        () => {
-          worker.terminate();
-          reject(new Error("Fizik çözümü yeni bir planla iptal edildi."));
-        },
-        { worker },
-      );
-      worker.onmessage = ({ data }) => {
-        if (data.error) reject(new Error(data.error));
+      const fail = (error) =>
+        tolerant[i] && !cancelled ? resolve(error) : reject(error);
+      workers[i].onmessage = ({ data }) => {
+        if (data.error) fail(new Error(data.error));
         else if (data.simulation) resolve(data.simulation);
-        else if (currentState === "loading")
-          ui.message(
-            `240 Hz uçuş dinamiği çözülüyor · %${Math.round(data.progress * 100)}`,
-          );
+        else {
+          progress[i] = data.progress;
+          if (currentState === "loading")
+            ui.message(
+              `240 Hz uçuş dinamiği çözülüyor${jobs.length > 1 ? " · nominal + arıza senaryosu" : ""} · %${Math.round((100 * progress.reduce((a, b) => a + b, 0)) / jobs.length)}`,
+            );
+        }
       };
-      worker.onerror = () =>
-        reject(
+      workers[i].onerror = () =>
+        fail(
           new Error("Fizik işlemcisi başlatılamadı. Sayfayı yeniden yükleyin."),
         );
-      worker.postMessage({ reference, options });
+      workers[i].postMessage(job);
+    });
+  return withTimeout(
+    new Promise((resolve, reject) => {
+      // A newer plan supersedes this solve: stop the workers and settle now
+      // instead of leaving the promise pending until the timeout.
+      cancelSolve = () => {
+        cancel();
+        reject(new Error("Fizik çözümü yeni bir planla iptal edildi."));
+      };
+      Promise.all(jobs.map(solve)).then(resolve, reject);
     }),
-    90000,
+    120000,
     "Fizik çözümü zaman aşımına uğradı.",
   ).finally(() => {
-    worker.terminate();
-    if (cancelSolve && worker === cancelSolve.worker) cancelSolve = undefined;
+    workers.forEach((w) => w.terminate());
+    if (!cancelled) cancelSolve = undefined;
   });
 }
 
@@ -406,10 +503,12 @@ async function prepareMission(agl = 80, overrideToken) {
   cancelSolve?.();
   mission = undefined;
   analysis = undefined;
+  sorties = [];
+  sortieIndex = 0;
+  surveyPhotos = undefined;
+  ui.setSorties(0, 0);
   cachedSample = undefined;
-  missionEntities.forEach((entity) => viewer.entities.remove(entity));
-  missionEntities = [];
-  footprints?.entities.removeAll();
+  clearMission();
   ui.elements.mapError.hidden = true;
   ui.message("Gerçek arazi yükseklikleri yükleniyor…");
   try {
@@ -438,23 +537,37 @@ async function prepareMission(agl = 80, overrideToken) {
     if (!response.ok)
       throw new Error(`Rota dosyası yüklenemedi (HTTP ${response.status}).`);
     const waypointText = await response.text();
+    // Obstacle snapshot (OpenStreetMap buildings, trees, masts); without it
+    // the checklist reports that obstacles were not checked.
+    if (obstacleSnapshot === undefined) {
+      try {
+        const answer = await fetch(new URL("./obstacles.json", document.baseURI));
+        obstacleSnapshot = answer.ok ? await answer.json() : null;
+      } catch {
+        obstacleSnapshot = null;
+      }
+    }
     const mass = Number(ui.elements.massInput.value),
       wind = Number(ui.elements.windInput.value),
       seed = Number(ui.elements.seedInput.value),
       turbulence = ui.elements.turbulenceInput.checked,
       gimbalPitch = Number(ui.elements.gimbalInput.value),
       frontOverlap = Number(ui.elements.overlapInput.value) / 100,
-      gnss = ui.elements.gnssInput.value;
-    if (
-      !Number.isFinite(mass) ||
-      mass < 1 ||
-      mass > 3 ||
-      !Number.isFinite(wind) ||
-      wind < 0 ||
-      wind > WIND_LIMIT
-    )
+      gnss = ui.elements.gnssInput.value,
+      type = ui.elements.missionTypeInput.value,
+      sideOverlap = Number(ui.elements.sideOverlapInput.value) / 100,
+      faultType = ui.elements.faultInput.value,
+      faultTime = Number(ui.elements.faultTimeInput.value),
+      secondType = ui.elements.secondFaultInput.value,
+      secondTime = Number(ui.elements.secondFaultTimeInput.value),
+      rtlTarget = ui.elements.rtlTargetInput.value;
+    if (!Number.isFinite(mass) || mass < 1 || mass > 3)
+      throw new Error("Kalkış kütlesi 1–3 kg arasında olmalı.");
+    // Mean-wind authority limit of this airframe (see windLimit()).
+    const limit = windLimit(airframeFor(mass));
+    if (!Number.isFinite(wind) || wind < 0 || wind > limit)
       throw new Error(
-        `Kütle 1–3 kg, rüzgâr 0–${WIND_LIMIT.toLocaleString("tr")} m/s arasında olmalı.`,
+        `${mass.toLocaleString("tr")} kg gövdede rüzgâr 0–${limit.toLocaleString("tr")} m/s arasında olmalı (yetki sınırı).`,
       );
     // mulberry32 takes a 32-bit seed; larger or fractional values would alias.
     if (!Number.isInteger(seed) || seed < 0 || seed > 4294967295)
@@ -471,65 +584,149 @@ async function prepareMission(agl = 80, overrideToken) {
       throw new Error(
         "Bindirme %60–90, gimbal −90…−45° ve navigasyon RTK/standart olmalı.",
       );
-    const route = createTerrainRoute(C, JSON.parse(waypointText), {
-      agl,
-      wind,
-    });
-    // Sample positions depend only on the waypoints and corridor constants, so
-    // re-planning with another height, mass, wind or payload reuses them.
     if (
-      terrainCache?.provider === provider &&
-      terrainCache.waypointText === waypointText &&
-      terrainCache.heights.length === route.samples.length
-    ) {
-      route.samples.forEach((p, i) => (p.height = terrainCache.heights[i]));
-    } else {
+      !["recon", "survey"].includes(type) ||
+      !Number.isFinite(sideOverlap) ||
+      sideOverlap < 0.6 ||
+      sideOverlap > 0.8
+    )
+      throw new Error("Görev tipi keşif/haritalama, yan bindirme %60–80 olmalı.");
+    const faults = [
+      [faultType, faultTime],
+      [secondType, secondTime],
+    ]
+      .filter(([type]) => type !== "none")
+      .map(([type, time]) => {
+        if (!Object.hasOwn(FAULTS, type) || !Number.isFinite(time) || time < 10 || time > 3600)
+          throw new Error("Arıza zamanı 10–3600 s arasında olmalı.");
+        return { type, time };
+      });
+    if (
+      new Set(faults.map((f) => f.type.replace(/-.*/, ""))).size !== faults.length
+    )
+      throw new Error("Aynı türden iki arıza (ör. iki GNSS arızası) birlikte seçilemez.");
+    if (!["nearest", "home"].includes(rtlTarget))
+      throw new Error("RTL hedefi en yakın güvenli nokta ya da kalkış noktası olmalı.");
+    const airframe = airframeFor(mass),
+      battery = batteryModel();
+    // An area survey larger than one battery flies as several sorties.
+    const data = JSON.parse(waypointText),
+      routes =
+        type === "survey"
+          ? surveySorties(
+              C,
+              data,
+              { agl, wind },
+              { sideOverlap, gimbalPitch, obstacles: obstacleSnapshot },
+              sortieLimit(airframe, battery),
+            )
+          : [createTerrainRoute(C, data, { agl, wind }, { type, obstacles: obstacleSnapshot })];
+    // Heights are cached by position: re-planning with another height,
+    // mass, wind, payload or fault reuses them, a new grid samples only its
+    // new positions.
+    if (terrainCache?.provider !== provider)
+      terrainCache = { provider, heights: new Map() };
+    for (const [k, route] of routes.entries())
       await withTimeout(
-        sampleTerrainRoute(C, provider, route, (progress) => {
-          if (id === runId && currentState === "loading")
-            ui.message(
-              `Arazi koridoru örnekleniyor · %${Math.round(progress * 100)}`,
-            );
-        }),
+        sampleTerrainRoute(
+          C,
+          provider,
+          route,
+          (progress) => {
+            if (id === runId && currentState === "loading")
+              ui.message(
+                `Arazi koridoru örnekleniyor${routes.length > 1 ? ` · uçuş ${k + 1}/${routes.length}` : ""} · %${Math.round(progress * 100)}`,
+              );
+          },
+          terrainCache.heights,
+        ),
         90000,
         "Arazi örneklemesi tamamlanamadı. Yeniden hesaplayın veya erişim tokenını kontrol edin.",
       );
-      terrainCache = {
-        provider,
-        waypointText,
-        heights: route.samples.map((p) => p.height),
+    if (id !== runId) return;
+    const candidates = routes.map((route) => buildMission(C, route));
+    const options = { airframe, battery, wind, seed, turbulence, gnss };
+    for (const candidate of candidates)
+      candidate.model = calibrationApplied
+        ? `kalibre · ${calibration.source} (${calibration.result.report.filter((r) => r.applied).length} parametre)`
+        : "nominal";
+    // Everything a failsafe or an operator command needs to re-plan in
+    // flight; kept so an operator command can re-solve the flight. Faults
+    // are injected into the first sortie.
+    for (const [k, candidate] of candidates.entries())
+      candidate.flight = {
+        options,
+        armed: {
+          failsafe: true,
+          settings: candidate.settings,
+          terrain: terrainForWorker(candidate),
+          rally: candidate.rally.map(({ name, xy }) => ({ name, xy })),
+          rtlTarget,
+        },
+        faults: k === 0 ? faults : [],
+        commands: [],
       };
-    }
+    // Each sortie solved fault-free for the preflight checklist; with faults
+    // the first one also faulted (failsafes armed) for the flight shown. All
+    // in parallel workers.
+    const jobs = candidates.map((candidate) => ({
+      reference: candidate.reference,
+      options,
+    }));
+    if (faults.length)
+      jobs.push({
+        reference: candidates[0].reference,
+        options: { ...options, ...candidates[0].flight.armed, faults },
+      });
+    const solved = await solveDynamics(
+      jobs,
+      jobs.map((_, k) => k >= candidates.length),
+    );
     if (id !== runId) return;
-    const candidate = buildMission(C, route);
-    const airframe = {
-      ...AIRFRAME,
-      mass,
-      inertia: AIRFRAME.inertia.map((x) => (x * mass) / 2),
-    };
-    const simulation = await solveDynamics(candidate.reference, {
-      airframe,
-      wind,
-      seed,
-      turbulence,
-      gnss,
-    });
-    if (id !== runId) return;
-    attachSimulation(candidate, simulation);
-    const result = analyzeMission(C, candidate, { gimbalPitch, frontOverlap });
-    mission = candidate;
-    analysis = result;
+    const faulted = faults.length ? solved.at(-1) : null,
+      scenarioError = faulted instanceof Error ? faulted.message : null;
+    candidates.forEach((candidate, k) =>
+      attachSimulation(
+        candidate,
+        k === 0 && faulted && !scenarioError ? faulted : solved[k],
+        solved[k],
+      ),
+    );
+    const payload = { gimbalPitch, frontOverlap };
+    surveyPhotos =
+        candidates.length > 1
+          ? candidates.flatMap((candidate) => planPhotos(candidate, payload))
+          : undefined;
+    sorties = candidates.map((candidate) => ({
+      mission: candidate,
+      analysis: analyzeMission(C, candidate, payload, { surveyPhotos }),
+    }));
+    sortieIndex = 0;
+    mission = sorties[0].mission;
+    analysis = sorties[0].analysis;
     cachedSample = undefined;
     cachedTime = undefined;
     installMission();
-    setState(analysis.blocked ? "blocked" : "ready");
+    const blocked = sorties.some((x) => x.analysis.blocked);
+    setState(blocked ? "blocked" : "ready");
+    ui.setSorties(sorties.length, sortieIndex);
     ui.setMission(mission, analysis);
-    const failed = analysis.checks.filter((c) => c.blocking && !c.ok);
+    const failed = sorties.flatMap((x, k) =>
+      x.analysis.checks
+        .filter((c) => c.blocking && !c.ok)
+        .map((c) => `${sorties.length > 1 ? `uçuş ${k + 1}: ` : ""}${c.label.toLocaleLowerCase("tr")}`),
+    );
+    const plan = analysis.planCoverage,
+      photos = sorties.reduce((sum, x) => sum + x.analysis.planCoverage.count, 0),
+      lowest = Math.min(...sorties.map((x) => x.mission.nominal.simulation.metrics.finalSoc));
     ui.message(
-      failed.length
-        ? `Görev onaylanmadı: ${failed.map((c) => c.label.toLocaleLowerCase("tr")).join(", ")}. Planı inceleyip parametreleri değiştirin.`
-        : `Görev onaylandı: ${analysis.coverage.count} fotoğraf, ortalama GSD ${(analysis.coverage.gsdMean * 100).toFixed(1)} cm, inişte batarya %${Math.round(simulation.metrics.finalSoc * 100)}.`,
-      failed.length > 0,
+      (failed.length
+        ? `Görev onaylanmadı: ${failed.join(", ")}. Planı inceleyip parametreleri değiştirin.`
+        : `Görev onaylandı: ${sorties.length > 1 ? `${sorties.length} uçuş (batarya değişimiyle), ` : ""}${mission.survey ? `${mission.survey.count} hat, ` : ""}${photos} fotoğraf, ortalama GSD ${(plan.gsdMean * 100).toFixed(1)} cm${mission.survey ? `, alanın %${(plan.areaCovered * 100).toFixed(1)}'i` : ""}, inişte batarya ${sorties.length > 1 ? "en az " : ""}%${Math.round(lowest * 100)}.`) +
+        (scenarioError
+          ? ` Arıza senaryosu çözülemedi: ${scenarioError}`
+          : faultSummary(mission)),
+      failed.length > 0 || Boolean(scenarioError),
     );
     setCamera(cameraMode);
     render();
@@ -542,6 +739,127 @@ async function prepareMission(agl = 80, overrideToken) {
     ui.elements.mapError.hidden = false;
     if (!provider) ui.elements.ionToken.closest("details").open = true;
     // Do not print service errors: request URLs can contain access tokens.
+  }
+}
+
+// Where the flown solve landed, for messages.
+function landingText(metrics) {
+  return metrics.landingSite === "field"
+    ? `evden ${formatDistance(metrics.homeDistance)} uzakta yerinde iniş`
+    : metrics.landingSite === "rally"
+      ? `rally noktasına (${metrics.landingName}) iniş`
+      : "evde iniş";
+}
+// One-line outcome of injected faults for the status message.
+function faultSummary(m) {
+  const f = m.simulation.failsafe;
+  if (!f?.faults?.length) return "";
+  const actions = f.events
+    .filter((e) => e.label.startsWith("FAILSAFE"))
+    .map((e) => `${e.label.replace("FAILSAFE · ", "")} ${formatTime(e.time)}`);
+  const metrics = m.simulation.metrics;
+  return ` Arıza senaryosu: ${f.faults.map((x) => `${FAULTS[x.type].label} ${formatTime(x.time)}`).join(" + ")}${actions.length ? ` → ${actions.join(" → ")}` : " → failsafe eylemi gerekmedi"}; ${landingText(metrics)}, batarya %${Math.round(metrics.finalSoc * 100)}.`;
+}
+
+// Show another sortie of a multi-flight survey: its plan, flight and
+// checklist, from the pad.
+function selectSortie(index) {
+  if (!sorties[index] || index === sortieIndex || currentState === "loading")
+    return;
+  viewer.clock.shouldAnimate = false;
+  sortieIndex = index;
+  mission = sorties[index].mission;
+  analysis = sorties[index].analysis;
+  cachedSample = undefined;
+  cachedTime = undefined;
+  clearMission();
+  installMission();
+  setState(analysis.blocked ? "blocked" : "ready");
+  ui.setSorties(sorties.length, sortieIndex);
+  ui.setMission(mission, analysis);
+  ui.message(
+    `Uçuş ${index + 1}/${sorties.length}: ${mission.survey.lines.length} hat, ${analysis.planCoverage.count} fotoğraf, inişte batarya %${Math.round(mission.nominal.simulation.metrics.finalSoc * 100)}.`,
+  );
+  setCamera(cameraMode);
+  render();
+}
+
+function clearMission() {
+  missionEntities.forEach((entity) => viewer.entities.remove(entity));
+  missionEntities = [];
+  footprints?.entities.removeAll();
+  obstacleLayer?.entities.removeAll();
+}
+
+// Operator command during playback. The flight is solved in advance and
+// deterministic, so the command is applied by re-solving it with the
+// command at the current mission time: up to that moment the new solve is
+// identical, from it the autopilot obeys. Playback resumes where it was.
+let operatorBusy = false;
+async function operatorCommand(action) {
+  if (!mission?.flight || operatorBusy || !["running", "paused"].includes(currentState))
+    return;
+  const flight = mission.flight,
+    seconds = elapsed(),
+    wasRunning = currentState === "running";
+  if (seconds >= mission.duration - 1) return;
+  operatorBusy = true;
+  viewer.clock.shouldAnimate = false;
+  ui.message(`Operatör komutu (${formatTime(seconds)}): uçuş bu andan itibaren yeniden çözülüyor…`);
+  const id = runId,
+    commands = [
+      ...flight.commands.filter((c) => c.time < seconds),
+      { time: seconds, action },
+    ];
+  try {
+    const [simulation] = await solveDynamics([
+      {
+        reference: mission.reference,
+        options: {
+          ...flight.options,
+          ...flight.armed,
+          faults: flight.faults,
+          commands,
+        },
+      },
+    ]);
+    if (id !== runId) return;
+    flight.commands = commands;
+    const nominal = mission.nominal.simulation;
+    attachSimulation(mission, simulation, nominal);
+    analysis = analyzeMission(
+      C,
+      mission,
+      {
+        gimbalPitch: analysis.capture.pitchDegrees,
+        frontOverlap: analysis.capture.overlap,
+      },
+      { surveyPhotos },
+    );
+    sorties[sortieIndex].analysis = analysis;
+    cachedSample = undefined;
+    cachedTime = undefined;
+    clearMission();
+    installMission();
+    ui.setMission(mission, analysis);
+    viewer.clock.currentTime = C.JulianDate.addSeconds(
+      startTime,
+      seconds,
+      new C.JulianDate(),
+    );
+    setState(wasRunning ? "running" : "paused");
+    viewer.clock.shouldAnimate = wasRunning;
+    const event = simulation.failsafe.events.findLast((e) => e.kind === "operator");
+    ui.message(
+      `${event?.label ?? "Operatör komutu"} · ${formatTime(seconds)} — ${event?.detail ?? ""}; ${landingText(simulation.metrics)} bekleniyor, batarya %${Math.round(simulation.metrics.finalSoc * 100)}.`,
+    );
+    render();
+  } catch (error) {
+    if (id !== runId) return;
+    viewer.clock.shouldAnimate = wasRunning;
+    ui.message(`Operatör komutu uygulanamadı: ${error.message}`, true);
+  } finally {
+    operatorBusy = false;
   }
 }
 
@@ -668,6 +986,191 @@ function installMission() {
       material: C.Color.fromCssColorString("#7bdad1"),
     },
   });
+  if (mission.survey) {
+    // Survey polygon outline draped on the terrain.
+    const ring = mission.survey.vertices.concat([mission.survey.vertices[0]]);
+    add({
+      name: "Haritalama alanı",
+      polyline: {
+        positions: ring.map((v) =>
+          C.Cartesian3.fromDegrees(v.longitude, v.latitude),
+        ),
+        width: 2,
+        clampToGround: true,
+        material: C.Color.fromCssColorString("#ffd27a").withAlpha(0.85),
+      },
+    });
+  }
+  const failsafe = mission.simulation.failsafe;
+  if (failsafe?.rtl) {
+    // The direct return leg the failsafe planned over the elevation model.
+    add({
+      name: "Failsafe dönüş bacağı",
+      polyline: {
+        positions: failsafe.rtl.points.map((p, i) =>
+          world([p[0], p[1], failsafe.rtl.profile[i]]),
+        ),
+        width: 2,
+        arcType: C.ArcType.NONE,
+        material: new C.PolylineDashMaterialProperty({
+          color: C.Color.fromCssColorString("#ff8f7a"),
+          dashLength: 12,
+        }),
+      },
+    });
+  }
+  // Obstacles within 40 m of the planned path as prisms on the modelled
+  // ground (forest canopy is left to the imagery), and the one that set the
+  // lowest clearance of the flown trace.
+  const groundAt = (xy) => toGeodetic(C, mission, [xy[0], xy[1], terrainAt(mission, xy).height]).height,
+    lonLat = (xy) => {
+      const g = toGeodetic(C, mission, [xy[0], xy[1], 0]);
+      return [g.longitude, g.latitude];
+    };
+  const OBSTACLE_COLORS = {
+    building: "#d8c3a5",
+    mast: "#ff8f7a",
+    tower: "#ff8f7a",
+    tree: "#7fb069",
+    tree_row: "#7fb069",
+    other: "#d8c3a5",
+  };
+  for (const { obstacle: o, nearest, ground } of obstaclesAlongPath(mission)) {
+    if (o.kind === "forest") continue;
+    const height = toGeodetic(C, mission, [nearest[0], nearest[1], ground]).height,
+      base = height - 2,
+      top = height + o.height,
+      material = C.Color.fromCssColorString(OBSTACLE_COLORS[o.kind] ?? "#d8c3a5").withAlpha(0.8),
+      name = `Engel · ${obstacleText(o)}`;
+    if (o.shape === "polygon")
+      obstacleLayer.entities.add({
+        name,
+        polygon: {
+          hierarchy: C.Cartesian3.fromDegreesArray(o.xy.flatMap(lonLat)),
+          height: base,
+          extrudedHeight: top,
+          material,
+          outline: false,
+        },
+      });
+    else if (o.shape === "line")
+      obstacleLayer.entities.add({
+        name,
+        corridor: {
+          positions: C.Cartesian3.fromDegreesArray(o.xy.flatMap(lonLat)),
+          width: 2 * o.radius,
+          height: base,
+          extrudedHeight: top,
+          material,
+        },
+      });
+    else {
+      const [lon, lat] = lonLat(o.xy[0]);
+      obstacleLayer.entities.add({
+        name,
+        position: C.Cartesian3.fromDegrees(lon, lat, (base + top) / 2),
+        cylinder: {
+          length: top - base,
+          topRadius: Math.max(0.5, o.radius / 3),
+          bottomRadius: Math.max(1, o.radius),
+          material,
+        },
+      });
+    }
+  }
+  const closest = mission.obstacleClearance;
+  if (closest?.obstacle && closest.nearest) {
+    const [lon, lat] = lonLat(closest.nearest);
+    obstacleLayer.entities.add({
+      name: "En düşük engel açıklığı",
+      position: C.Cartesian3.fromDegrees(lon, lat, groundAt(closest.nearest) + closest.obstacle.height),
+      point: { pixelSize: 7, color: C.Color.fromCssColorString("#ff8f7a"), disableDepthTestDistance: 15000 },
+      label: {
+        text: `▲ ${obstacleText(closest.obstacle)} · açıklık ${Math.round(closest.clearance)} m`,
+        font: "11px sans-serif",
+        pixelOffset: new C.Cartesian2(0, -14),
+        fillColor: C.Color.WHITE,
+        showBackground: true,
+        backgroundColor: C.Color.fromCssColorString("#2b1d16").withAlpha(0.85),
+        disableDepthTestDistance: 15000,
+        distanceDisplayCondition: new C.DistanceDisplayCondition(30, 6000),
+      },
+    });
+  }
+  // Rally points: safe landing sites a return may choose.
+  for (const point of mission.rally ?? []) {
+    const ground = C.Cartographic.fromDegrees(point.longitude, point.latitude);
+    add({
+      name: `Rally · ${point.name}`,
+      position: C.Cartesian3.fromRadians(ground.longitude, ground.latitude),
+      point: {
+        pixelSize: 10,
+        color: C.Color.fromCssColorString("#ffd27a"),
+        outlineColor: C.Color.BLACK,
+        outlineWidth: 1,
+        heightReference: C.HeightReference.CLAMP_TO_GROUND,
+        disableDepthTestDistance: 15000,
+      },
+      label: {
+        text: `R  ${point.name}`,
+        font: "bold 11px sans-serif",
+        pixelOffset: new C.Cartesian2(0, -18),
+        fillColor: C.Color.WHITE,
+        showBackground: true,
+        backgroundColor: C.Color.fromCssColorString("#101b20").withAlpha(0.85),
+        heightReference: C.HeightReference.CLAMP_TO_GROUND,
+        disableDepthTestDistance: 15000,
+        distanceDisplayCondition: new C.DistanceDisplayCondition(30, 15000),
+      },
+    });
+  }
+  // Fault and failsafe events where they happened in the flown solve.
+  for (const event of failsafe?.events ?? []) {
+    if (event.kind === "info") continue;
+    const state = evaluateMission(C, mission, event.time);
+    add({
+      name: event.label,
+      position: state.cartesian,
+      availability: new C.TimeIntervalCollection([
+        new C.TimeInterval({
+          start: C.JulianDate.addSeconds(startTime, event.time, new C.JulianDate()),
+          stop,
+        }),
+      ]),
+      point: {
+        pixelSize: 9,
+        color: C.Color.fromCssColorString(
+          event.kind === "fault"
+            ? "#ff8f7a"
+            : event.kind === "operator"
+              ? "#8fd3ff"
+              : "#ffd27a",
+        ),
+        outlineColor: C.Color.BLACK,
+        outlineWidth: 1,
+        disableDepthTestDistance: 15000,
+      },
+      // The fault's label above its marker, the failsafe's below, so the
+      // two stay readable when they happen close together.
+      label: {
+        text: event.label
+          .replace("FAILSAFE · ", "")
+          .replace("ARIZA · ", "⚠ ")
+          .replace("OPERATÖR · ", "◆ "),
+        font: "bold 11px sans-serif",
+        verticalOrigin:
+          event.kind === "fault"
+            ? C.VerticalOrigin.BOTTOM
+            : C.VerticalOrigin.TOP,
+        pixelOffset: new C.Cartesian2(0, event.kind === "fault" ? -10 : 10),
+        fillColor: C.Color.WHITE,
+        showBackground: true,
+        backgroundColor: C.Color.fromCssColorString("#3a1d18").withAlpha(0.85),
+        disableDepthTestDistance: 15000,
+        distanceDisplayCondition: new C.DistanceDisplayCondition(30, 12000),
+      },
+    });
+  }
   // Image footprints draped on the terrain; each appears when its photo is
   // taken and stays until the end of the mission.
   const footprintColor = C.Color.fromCssColorString("#7bdad1").withAlpha(0.09);
@@ -776,6 +1279,8 @@ function boot() {
     window.viewer = viewer;
     footprints = new C.CustomDataSource("footprints");
     viewer.dataSources.add(footprints);
+    obstacleLayer = new C.CustomDataSource("obstacles");
+    viewer.dataSources.add(obstacleLayer);
     viewer.scene.globe.depthTestAgainstTerrain = true;
     viewer.scene.globe.enableLighting = false;
     // A coarse pointer marks touch/mobile devices: a looser tile error keeps

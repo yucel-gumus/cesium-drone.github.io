@@ -33,8 +33,14 @@ function geometryAt(piece, u) {
   };
 }
 
-export function roundedPath(points, trim = 45, spacing = 2) {
-  const pieces = [];
+// `corners` lists, for every interior waypoint, the arc length where its
+// rounded corner starts and ends; area surveys use it to find the grid.
+// A corner may use at most `share` of each adjacent leg: the waypoint loop
+// keeps straight runs between its bends, a survey grid's short turnaround
+// legs give their whole length to the two corners at their ends.
+export function roundedPath(points, trim = 45, spacing = 2, share = 0.24) {
+  const pieces = [],
+    cornerPieces = [];
   let last = points[0];
   const line = (a, b) => {
     if (norm(sub(b, a)) > 0.01) pieces.push([a, b]);
@@ -42,7 +48,7 @@ export function roundedPath(points, trim = 45, spacing = 2) {
   for (let i = 1; i < points.length - 1; i++) {
     const incoming = sub(points[i], points[i - 1]),
       outgoing = sub(points[i + 1], points[i]);
-    const d = Math.min(trim, norm(incoming) * 0.24, norm(outgoing) * 0.24);
+    const d = Math.min(trim, norm(incoming) * share, norm(outgoing) * share);
     const u = unit(incoming),
       v = unit(outgoing);
     if (norm(add(u, v)) < 0.1)
@@ -50,6 +56,7 @@ export function roundedPath(points, trim = 45, spacing = 2) {
     const a = sub(points[i], mul(u, d)),
       b = add(points[i], mul(v, d));
     line(last, a);
+    cornerPieces.push({ waypoint: i, piece: pieces.length });
     // Collinear first/last three controls give zero endpoint curvature: C2
     // geometric joins to straight legs, no instantaneous lateral acceleration.
     pieces.push([
@@ -63,10 +70,13 @@ export function roundedPath(points, trim = 45, spacing = 2) {
     last = b;
   }
   line(last, points.at(-1));
-  const dense = [];
+  const dense = [],
+    pieceStart = [],
+    pieceEnd = [];
   let distance = 0,
     previous;
   for (const piece of pieces) {
+    pieceStart.push(distance);
     const length = piece
       .slice(1)
       .reduce((s, p, i) => s + norm(sub(p, piece[i])), 0);
@@ -78,6 +88,7 @@ export function roundedPath(points, trim = 45, spacing = 2) {
       dense.push({ ...x, s: distance });
       previous = x.p;
     }
+    pieceEnd.push(distance);
   }
   const table = [];
   let cursor = 0;
@@ -95,16 +106,33 @@ export function roundedPath(points, trim = 45, spacing = 2) {
       curvature: a.curvature + (b.curvature - a.curvature) * f,
     });
   }
-  return { pieces, table, length: distance };
+  const corners = cornerPieces.map(({ waypoint, piece }) => ({
+    waypoint,
+    start: pieceStart[piece],
+    end: pieceEnd[piece],
+  }));
+  return { pieces, table, length: distance, corners };
 }
 
-// Builds the time-parameterised reference the controller tracks. `profile`
-// is the survey height per path knot (ENU metres, see terrainFollowingProfile
-// in flight-planner.mjs) or one number for a constant height. The horizontal
-// speed plan, the terrain-following height and their derivatives share one
-// set of quintic segments, so position, velocity and acceleration stay
-// continuous in all three axes.
-export function makeReference(path, profile, settings) {
+// Speed-profile corner rounding (m) of area surveys and failsafe legs, see
+// horizontalReference().
+export const JERK_SMOOTHING = 10;
+
+// Horizontal part of a reference: speed plan, terrain-following height and
+// their derivatives in one set of quintic segments, so position, velocity
+// and acceleration stay continuous in all three axes. `profile` is the
+// height per path knot (ENU metres, see terrainFollowingProfile in
+// terrain.mjs) or one number for a constant height. The vehicle is at rest
+// at both ends of the path. Segment times start at zero.
+// `options.jerkSmoothing` (metres) rounds the corners of the speed profile:
+// the acceleration-limited ramps start and stop abruptly, which the quintic
+// segments turn into jerk spikes that the demand loop below can only cure
+// by slowing a wide stretch down. Squared speed is first eroded and then
+// box-averaged over ± that distance; the average of a minimum filter of
+// the same width never exceeds the original, so every speed cap still
+// holds, while the along-track acceleration becomes continuous. Area
+// surveys and failsafe legs use it; the waypoint loop keeps its profile.
+export function horizontalReference(path, profile, settings, options = {}) {
   const table = path.table,
     n = table.length;
   const heights =
@@ -158,6 +186,22 @@ export function makeReference(path, profile, settings) {
       speeds[i],
       Math.sqrt(speeds[i + 1] ** 2 + 2 * 0.65 * (table[i + 1].s - table[i].s)),
     );
+  if (options.jerkSmoothing > 0 && n > 2) {
+    const w = Math.max(1, Math.round(options.jerkSmoothing / h)),
+      squared = speeds.map((v) => v * v);
+    const floor = squared.map((_, i) => {
+      let min = Infinity;
+      for (let j = Math.max(0, i - w); j <= Math.min(n - 1, i + w); j++)
+        min = Math.min(min, squared[j]);
+      return min;
+    });
+    speeds = floor.map((_, i) => {
+      let sum = 0;
+      for (let j = -w; j <= w; j++) sum += floor[clamp(i + j, 0, n - 1)];
+      return Math.sqrt(sum / (2 * w + 1));
+    });
+    speeds[0] = speeds[n - 1] = 0;
+  }
   function buildSurvey() {
     const along = table.map((k, i) => {
       const a = Math.max(0, i - 1),
@@ -257,96 +301,190 @@ export function makeReference(path, profile, settings) {
     seg.duration *= scale;
   });
   const horizontalDuration = time * scale;
-  const initialYaw = Math.atan2(table[0].tangent[1], table[0].tangent[0]);
-  const finalYaw = Math.atan2(table.at(-1).tangent[1], table.at(-1).tangent[0]);
-  const startHeight = heights[0],
-    endHeight = heights[n - 1];
-  const verticalDuration = (dz, speed) =>
-    Math.max(
-      3,
-      (1.875 * Math.abs(dz)) / speed,
-      Math.sqrt((5.774 * Math.abs(dz)) / settings.acceleration),
-      Math.cbrt((60 * Math.abs(dz)) / settings.jerk),
-    );
-  const phases = [];
-  let clock = 0;
-  const append = (phase, duration, z0, z1, yaw, v0 = 0, v1 = 0) => {
-    phases.push({
-      phase,
-      startTime: clock,
-      endTime: clock + duration,
-      duration,
-      z: quintic(z0, v0, 0, z1, v1, 0, duration),
-      yaw,
-    });
-    clock += duration;
-  };
-  append("arming", 2, 0, 0, initialYaw);
-  append(
-    "takeoff",
-    verticalDuration(startHeight, settings.climbSpeed),
-    0,
-    startHeight,
-    initialYaw,
-  );
-  const surveyStart = clock;
-  phases.push({
-    phase: "survey",
-    startTime: clock,
-    endTime: clock + horizontalDuration,
-    duration: horizontalDuration,
-  });
-  clock += horizontalDuration;
-  // Return-to-home landing as autopilots fly it: hold over home, descend to
-  // the crawl height, then descend at constant landing speed until the land
-  // detector (measured thrust and velocity, see control()) cuts the motors.
-  // The reference keeps going below the pad so position errors of the
-  // navigation solution cannot leave the vehicle hovering above ground.
-  const crawlHeight = settings.landingCrawlHeight ?? 3,
-    landingSpeed = settings.landingSpeed ?? 0.35,
-    overshoot = settings.landingOvershoot ?? 2.5,
-    ramp = 2,
-    rampEnd = crawlHeight - (landingSpeed * ramp) / 2;
-  append("settle", 4, endHeight, endHeight, finalYaw);
-  append(
-    "landing",
-    verticalDuration(endHeight - crawlHeight, settings.descentSpeed),
-    endHeight,
-    crawlHeight,
-    finalYaw,
-  );
-  append("touchdown", ramp, crawlHeight, rampEnd, finalYaw, 0, -landingSpeed);
-  append(
-    "touchdown",
-    (rampEnd + overshoot) / landingSpeed,
-    rampEnd,
-    -overshoot,
-    finalYaw,
-    -landingSpeed,
-    -landingSpeed,
-  );
-  append(
-    "disarm",
-    4,
-    -overshoot,
-    -overshoot - landingSpeed * 2,
-    finalYaw,
-    -landingSpeed,
-    0,
-  );
   return {
     horizontal,
-    phases,
-    duration: clock,
-    surveyStart,
-    horizontalDuration,
-    profile: heights,
-    cruiseHeight: Math.max(...heights),
-    startHeight,
-    endHeight,
-    initialYaw,
-    finalYaw,
+    duration: horizontalDuration,
+    heights,
     timeScale: scale,
+    initialYaw: Math.atan2(table[0].tangent[1], table[0].tangent[0]),
+    finalYaw: Math.atan2(table.at(-1).tangent[1], table.at(-1).tangent[0]),
+    startHeight: heights[0],
+    endHeight: heights[n - 1],
+  };
+}
+
+// Duration of a rest-to-rest vertical quintic over `dz` that keeps the
+// peak speed, acceleration and jerk within the limits.
+export const verticalDuration = (dz, speed, settings) =>
+  Math.max(
+    3,
+    (1.875 * Math.abs(dz)) / speed,
+    Math.sqrt((5.774 * Math.abs(dz)) / settings.acceleration),
+    Math.cbrt((60 * Math.abs(dz)) / settings.jerk),
+  );
+
+// Consecutive reference phases on a running clock. Vertical phases move
+// along z above a fixed horizontal point `xy` (the pad when omitted); a
+// horizontal phase plays the reference's quintic segments.
+export function phaseSequence(start = 0) {
+  const phases = [];
+  let clock = start;
+  return {
+    phases,
+    get clock() {
+      return clock;
+    },
+    vertical(phase, duration, z0, z1, yaw, v0 = 0, v1 = 0, xy) {
+      phases.push({
+        phase,
+        startTime: clock,
+        endTime: clock + duration,
+        duration,
+        z: quintic(z0, v0, 0, z1, v1, 0, duration),
+        yaw,
+        ...(xy && { xy: [xy[0], xy[1]] }),
+      });
+      clock += duration;
+    },
+    horizontal(phase, duration) {
+      phases.push({
+        phase,
+        horizontal: true,
+        startTime: clock,
+        endTime: clock + duration,
+        duration,
+      });
+      clock += duration;
+    },
+  };
+}
+
+// Return-to-home landing as autopilots fly it: hold over the landing point,
+// descend to the crawl height, then descend at constant landing speed until
+// the land detector (measured thrust and velocity, see control()) cuts the
+// motors. The reference keeps going below the surface so position errors of
+// the navigation solution cannot leave the vehicle hovering above ground.
+// `base` is the CG rest height on the landing surface (0 on the pad); an
+// off-pad landing passes a deeper `overshoot`, as its ground is only known
+// from the elevation model.
+export function appendLanding(
+  sequence,
+  fromHeight,
+  yaw,
+  settings,
+  { base = 0, xy, settle = 4, overshoot } = {},
+) {
+  const crawlHeight = settings.landingCrawlHeight ?? 3,
+    landingSpeed = settings.landingSpeed ?? 0.35,
+    below = overshoot ?? settings.landingOvershoot ?? 2.5,
+    ramp = 2,
+    rampEnd = crawlHeight - (landingSpeed * ramp) / 2;
+  if (settle > 0)
+    sequence.vertical("settle", settle, fromHeight, fromHeight, yaw, 0, 0, xy);
+  sequence.vertical(
+    "landing",
+    verticalDuration(
+      fromHeight - (base + crawlHeight),
+      settings.descentSpeed,
+      settings,
+    ),
+    fromHeight,
+    base + crawlHeight,
+    yaw,
+    0,
+    0,
+    xy,
+  );
+  sequence.vertical(
+    "touchdown",
+    ramp,
+    base + crawlHeight,
+    base + rampEnd,
+    yaw,
+    0,
+    -landingSpeed,
+    xy,
+  );
+  sequence.vertical(
+    "touchdown",
+    (rampEnd + below) / landingSpeed,
+    base + rampEnd,
+    base - below,
+    yaw,
+    -landingSpeed,
+    -landingSpeed,
+    xy,
+  );
+  sequence.vertical(
+    "disarm",
+    4,
+    base - below,
+    base - below - landingSpeed * 2,
+    yaw,
+    -landingSpeed,
+    0,
+    xy,
+  );
+}
+
+// Time (from the start of the horizontal phase) at which the reference
+// passes arc length `s` of its path.
+export function timeAtArcLength(path, survey, s) {
+  const table = path.table;
+  let j = 0;
+  while (j < table.length - 1 && table[j].s < s) j++;
+  return j < survey.horizontal.length
+    ? survey.horizontal[j].startTime
+    : survey.duration;
+}
+
+// Builds the time-parameterised mission reference the controller tracks:
+// arming, vertical take-off, the horizontal survey and the landing at home.
+// `options.legs` ({ start, end } arc lengths) marks the imaging part of an
+// area survey: before it the vehicle is in transit, after it returning.
+// Without it the last 12 % of the route is labelled as the return leg.
+// `options.jerkSmoothing` see horizontalReference().
+export function makeReference(path, profile, settings, options = {}) {
+  const survey = horizontalReference(path, profile, settings, {
+    jerkSmoothing: options.jerkSmoothing,
+  });
+  const sequence = phaseSequence();
+  sequence.vertical("arming", 2, 0, 0, survey.initialYaw);
+  sequence.vertical(
+    "takeoff",
+    verticalDuration(survey.startHeight, settings.climbSpeed, settings),
+    0,
+    survey.startHeight,
+    survey.initialYaw,
+  );
+  const surveyStart = sequence.clock;
+  sequence.horizontal("survey", survey.duration);
+  appendLanding(sequence, survey.endHeight, survey.finalYaw, settings);
+  const legs = options.legs;
+  const labels = legs
+    ? [
+        { until: timeAtArcLength(path, survey, legs.start), phase: "transit" },
+        { until: timeAtArcLength(path, survey, legs.end), phase: "survey" },
+        { until: Infinity, phase: "return" },
+      ]
+    : [
+        { until: survey.duration * 0.88, phase: "survey" },
+        { until: Infinity, phase: "return" },
+      ];
+  return {
+    horizontal: survey.horizontal,
+    phases: sequence.phases,
+    duration: sequence.clock,
+    surveyStart,
+    horizontalDuration: survey.duration,
+    labels,
+    profile: survey.heights,
+    cruiseHeight: Math.max(...survey.heights),
+    startHeight: survey.startHeight,
+    endHeight: survey.endHeight,
+    initialYaw: survey.initialYaw,
+    finalYaw: survey.finalYaw,
+    timeScale: survey.timeScale,
   };
 }
 
@@ -354,14 +492,15 @@ export function referenceAt(ref, time) {
   const t = clamp(time, 0, ref.duration);
   const phase =
     ref.phases.find((p) => t <= p.endTime + 1e-9) || ref.phases.at(-1);
-  if (phase.phase !== "survey") {
-    const z = polynomial(
-      phase.z,
-      clamp((t - phase.startTime) / phase.duration, 0, 1),
-      phase.duration,
-    );
+  if (!phase.horizontal) {
+    const xy = phase.xy ?? [0, 0],
+      z = polynomial(
+        phase.z,
+        clamp((t - phase.startTime) / phase.duration, 0, 1),
+        phase.duration,
+      );
     return {
-      p: [0, 0, z.p],
+      p: [xy[0], xy[1], z.p],
       v: [0, 0, z.v],
       a: [0, 0, z.a],
       yaw: phase.yaw,
@@ -371,7 +510,7 @@ export function referenceAt(ref, time) {
       phaseDuration: phase.duration,
     };
   }
-  const local = t - ref.surveyStart;
+  const local = t - phase.startTime;
   let lo = 0,
     hi = ref.horizontal.length - 1;
   while (lo < hi) {
@@ -397,6 +536,8 @@ export function referenceAt(ref, time) {
           ? ref.initialYaw
           : ref.finalYaw,
     yawRate: speed2 > 1e-8 ? (x.v * y.a - y.v * x.a) / speed2 : 0,
-    phase: local > ref.horizontalDuration * 0.88 ? "return" : "survey",
+    phase: ref.labels
+      ? ref.labels.find((l) => local <= l.until).phase
+      : phase.phase,
   };
 }

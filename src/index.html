@@ -33,13 +33,26 @@
         </div>
         <section class="mission-card">
           <div class="section-heading">
-            <h2>Keşif görevi</h2>
+            <h2 id="missionTitle">Keşif görevi</h2>
             <span class="tag">OTONOM</span>
           </div>
-          <p class="description">
+          <label class="mission-type" for="missionTypeInput"
+            >Görev tipi<select id="missionTypeInput">
+              <option value="recon" selected>Çevre keşfi · nokta rotası</option>
+              <option value="survey">Alan haritalama · ızgara</option>
+            </select></label
+          >
+          <p id="missionDescription" class="description">
             Kıyıdan kalkış, sabit AGL'de araziyi izleyerek göl çevresinde
             fotoğraflı keşif, aynı noktaya otonom iniş.
           </p>
+          <div
+            id="sortieControls"
+            class="sortie-controls"
+            role="group"
+            aria-label="Uçuşlar"
+            hidden
+          ></div>
           <ol class="phases" aria-label="Uçuş aşamaları">
             <li data-phase="takeoff"><span>01</span>Kalkış</li>
             <li data-phase="survey"><span>02</span>Keşif</li>
@@ -93,8 +106,8 @@
             /></label>
             <label
               for="windInput"
-              title="Ortalama rüzgâr hızı; MIL-F-8785C Dryden türbülansı (σ ≈ 0,14 × hız, seçilen tohum) üzerine eklenir. Üst sınır 3,5 m/s: 2 kg profilde 25° yatış / 4 m/s² ivme sınırının hamlelerle birlikte takip hatasını 1 m altında tuttuğu en yüksek değer; daha hafif gövdelerde yetki daha erken biter."
-              >Rüzgâr · m/s<input
+              title="Ortalama rüzgâr hızı; MIL-F-8785C Dryden türbülansı (σ ≈ 0,14 × hız, seçilen tohum) üzerine eklenir. Üst sınır kütleye bağlı yetki sınırıdır: karşı rüzgâr bacağında seyir + rüzgâr + 2σ hamlesinin sürüklemesi, 2 kg profilin ölçülmüş 3,5 m/s sınırındaki ivme talebini aşmamalı. Hafif gövdelerde yetki daha erken biter."
+              >Rüzgâr · ≤ <span id="windLimitValue">3,5</span> m/s<input
                 id="windInput"
                 type="number"
                 min="0"
@@ -146,11 +159,79 @@
                 value="80"
             /></label>
             <label
+              for="sideOverlapInput"
+              title="Alan haritalamada komşu hatların görüntüleri arasındaki yan bindirme. Hat aralığı = (1 − bindirme) × kameranın yan izi; %70'te 80 m AGL'de 36 m."
+              >Yan bindirme · %<input
+                id="sideOverlapInput"
+                type="number"
+                min="60"
+                max="80"
+                step="5"
+                value="70"
+                disabled
+            /></label>
+            <label
               for="gnssInput"
               title="RTK düzeltmeli GNSS santimetre, standart GNSS metre düzeyinde konum verir. Kontrolcü bu navigasyon çözümüyle uçar."
               >Navigasyon<select id="gnssInput">
                 <option value="rtk" selected>RTK GNSS</option>
                 <option value="standard">Standart GNSS</option>
+              </select></label
+            >
+          </div>
+          <div class="environment-controls fault-controls">
+            <label
+              for="faultInput"
+              title="Uçuşun önceden çözümüne zamanla tetiklenen bir arıza ekler; otopilotun failsafe'leri belirtilere tepki verir. Kontrol listesi planı arızasız çözümle değerlendirir, arıza sonucunu ayrı gösterir."
+              >Arıza senaryosu<select id="faultInput">
+                <option value="none" selected>Yok</option>
+                <option value="battery">Batarya hücresi · RTL</option>
+                <option value="gnss-outage">GNSS kesintisi · 15 s</option>
+                <option value="gnss-loss">GNSS kaybı · kalıcı</option>
+                <option value="motor">Motor 1 verim kaybı · %30</option>
+              </select></label
+            >
+            <label
+              for="faultTimeInput"
+              title="Arızanın görev saatine göre tetiklendiği an (kalkıştan itibaren saniye)."
+              >Arıza zamanı · s<input
+                id="faultTimeInput"
+                type="number"
+                min="10"
+                max="3600"
+                step="1"
+                value="240"
+                disabled
+            /></label>
+            <label
+              for="secondFaultInput"
+              title="Birinci arızaya eklenen ikinci, bağımsız arıza. Aynı türden iki arıza (ör. iki GNSS arızası) seçilemez."
+              >İkinci arıza<select id="secondFaultInput">
+                <option value="none" selected>Yok</option>
+                <option value="battery">Batarya hücresi</option>
+                <option value="gnss-outage">GNSS kesintisi · 15 s</option>
+                <option value="gnss-loss">GNSS kaybı · kalıcı</option>
+                <option value="motor">Motor 1 verim kaybı · %30</option>
+              </select></label
+            >
+            <label
+              for="secondFaultTimeInput"
+              title="İkinci arızanın görev saatine göre tetiklendiği an (saniye)."
+              >İkinci arıza zamanı · s<input
+                id="secondFaultTimeInput"
+                type="number"
+                min="10"
+                max="3600"
+                step="1"
+                value="300"
+                disabled
+            /></label>
+            <label
+              for="rtlTargetInput"
+              title="Failsafe ya da operatör eve dönüşünün hedefi: rota dosyasındaki rally noktaları dahil en yakın güvenli nokta (PX4 RTL_TYPE 3 gibi) veya yalnızca kalkış noktası."
+              >RTL hedefi<select id="rtlTargetInput">
+                <option value="nearest" selected>En yakın güvenli nokta</option>
+                <option value="home">Yalnızca kalkış noktası</option>
               </select></label
             >
           </div>
@@ -236,6 +317,12 @@
               <span>Anlık rüzgâr</span><strong id="windStatus">—</strong>
             </div>
             <div class="metric">
+              <span
+                title="Otopilotun sürükleme modelinden kestirdiği ortalama rüzgâr: hız ve esiş yönü (rüzgârın geldiği yön, kuzey 0°). Kontrolcü bunu sürükleme ileri beslemesinde, failsafe eve dönüş enerjisi tahmininde kullanır."
+                >Rüzgâr kestirimi ⓘ</span
+              ><strong id="windEstimateStatus">—</strong>
+            </div>
+            <div class="metric">
               <span>Fotoğraf</span><strong id="photoStatus">—</strong>
             </div>
             <div class="metric">
@@ -285,6 +372,9 @@
             <button id="exportGeojsonButton" class="button secondary" disabled>
               GeoJSON
             </button>
+            <button id="exportUlogButton" class="button secondary" disabled>
+              PX4 ULog
+            </button>
           </div>
         </section>
         <section class="events-panel">
@@ -299,6 +389,28 @@
         <details class="settings" id="physicsDetails">
           <summary>Fizik modeli ve uçuş doğrulaması</summary>
           <div id="physicsSummary">240 Hz rijit cisim çözümü hazırlanıyor.</div>
+        </details>
+        <details class="settings" id="calibrationDetails">
+          <summary>Kalibrasyon · uçuş kaydından tanılama</summary>
+          <p>
+            PX4 ULog (.ulg, ESC devir telemetrisiyle) ya da bu simülatörün CSV
+            kaydı. İtki, sürükleme, rüzgâr, atalet, güç ve paket direnci
+            kestirilir; kalkış kütlesi yukarıdaki alandan alınır. Kaydın
+            dönüşümlü iki yarısında tutarlı çıkan parametreler uygulanır.
+          </p>
+          <label for="calibrationFile">Uçuş kaydı</label
+          ><input id="calibrationFile" type="file" accept=".ulg,.csv" />
+          <div id="calibrationResult" class="calibration-result">
+            Kayıt yüklenmedi · nominal model.
+          </div>
+          <div class="calibration-actions">
+            <button id="calibrationApply" class="button secondary" disabled>
+              Kalibrasyonu uygula
+            </button>
+            <button id="calibrationReset" class="button secondary" disabled>
+              Nominal modele dön
+            </button>
+          </div>
         </details>
         <details class="settings">
           <summary>Harita erişim ayarı</summary>
@@ -318,8 +430,9 @@
         </details>
         <footer>
           <p>
-            Genel mühendislik modeli; ölçülmüş bir drone değildir. Bina/ağaç
-            engelleri ve uçuş verisiyle kalibrasyon henüz yoktur.
+            Genel mühendislik modeli; ölçülmüş bir drone değildir — gerçek
+            uçuş kaydıyla kalibre edilebilir. Engeller: © OpenStreetMap
+            katkıda bulunanlar (ODbL), yükseklikler kısmen varsayımdır.
           </p>
           <a
             href="https://www.yucelgumus.dev/"
@@ -474,6 +587,14 @@
             ><span class="legend-footprint"></span> Görüntü izi</span
           ><span class="legend-item"
             ><span class="legend-home">H</span> Kalkış / iniş</span
+          ><span id="legendArea" class="legend-item" hidden
+            ><span class="legend-area"></span> Haritalama alanı</span
+          ><span id="legendFailsafe" class="legend-item" hidden
+            ><span class="legend-line failsafe"></span> Failsafe</span
+          ><span id="legendRally" class="legend-item" hidden
+            ><span class="legend-rally">R</span> Rally noktası</span
+          ><span id="legendObstacle" class="legend-item" hidden
+            ><span class="legend-obstacle"></span> Engel (OSM)</span
           >
         </div>
         <div class="flight-bar">
@@ -493,6 +614,23 @@
             value="0"
             disabled
           />
+          <div
+            id="operatorControls"
+            class="operator-controls"
+            role="group"
+            aria-label="Operatör komutları"
+          >
+            <span>Operatör</span
+            ><button id="operatorRtlButton" type="button" data-command="rtl" disabled title="Uçuşu bu andan itibaren eve dönüşle yeniden çözer">
+              RTL</button
+            ><button id="operatorHoldButton" type="button" data-command="hold" disabled title="Rota üzerinde frenleyip konum tutar">
+              Konum tut</button
+            ><button id="operatorResumeButton" type="button" data-command="resume" disabled title="Konum tutmadan göreve devam eder">
+              Devam</button
+            ><button id="operatorLandButton" type="button" data-command="land" disabled title="Bulunduğu yere iner">
+              Yerinde in
+            </button>
+          </div>
           <div class="flight-bar-bottom">
             <span id="flightDistance">0 m kat edildi</span
             ><label for="playbackSpeed"

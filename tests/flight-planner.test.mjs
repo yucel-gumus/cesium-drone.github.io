@@ -13,7 +13,7 @@ import {
   validateGeoidUndulation,
 } from "../src/flight-planner.mjs";
 import { referenceAt } from "../src/trajectory.mjs";
-import { simulate, STRIDE } from "../src/quadrotor.mjs";
+import { simulate, STRIDE, hoverRotors } from "../src/quadrotor.mjs";
 import { dot, norm, sub, polynomial, rotate } from "../src/flight-math.mjs";
 const data = JSON.parse(
   fs.readFileSync(new URL("../public/points.json", import.meta.url)),
@@ -104,7 +104,12 @@ test("route bounds are mandatory, ordered, on the globe and small enough for one
 });
 
 test("terrain sampling covers the rounded path and both sides, not the old polygon", () => {
-  assert.equal(route.samples.length, route.centers.length * 3);
+  // Three corridor samples per station, then the failsafe raster nodes.
+  assert.equal(route.corridorSamples, route.centers.length * 3);
+  assert.equal(
+    route.samples.length,
+    route.corridorSamples + route.raster.nodes.length,
+  );
   assert.ok(route.path.length < 4897.5 && route.path.length > 4500);
   const distances = route.centers
     .slice(1)
@@ -211,12 +216,21 @@ test("recorded airborne acceleration obeys Newton force balance and turns have r
     const q = Array.from(simulation.data.slice(r + 7, r + 11)),
       v = Array.from(simulation.data.slice(r + 4, r + 7)),
       wind = Array.from(simulation.data.slice(r + 25, r + 28));
+    // Body drag on the whole airflow, rotor drag (scaled with the rotor
+    // speed sum relative to hover) on its part in the rotor plane.
     const relative = sub(v, wind),
-      dragFactor =
-        -(0.5 * c.airDensity * c.dragArea * norm(relative) + c.linearDrag) /
-        c.mass;
+      axis = rotate(q, [0, 0, 1]),
+      along = dot(relative, axis),
+      inPlane = relative.map((x, j) => x - along * axis[j]),
+      rotors = [17, 18, 19, 20].reduce((sum, k) => sum + simulation.data[r + k], 0),
+      body = (-0.5 * c.airDensity * c.dragArea * norm(relative)) / c.mass,
+      rotorDrag = (-c.linearDrag * rotors) / hoverRotors(c) / c.mass;
     const predicted = rotate(q, [0, 0, simulation.data[r + 21] / c.mass]).map(
-      (a, j) => a + dragFactor * relative[j] - (j === 2 ? c.gravity : 0),
+      (a, j) =>
+        a +
+        body * relative[j] +
+        rotorDrag * inPlane[j] -
+        (j === 2 ? c.gravity : 0),
     );
     const dt =
       simulation.data[(i + 1) * STRIDE] - simulation.data[(i - 1) * STRIDE];
