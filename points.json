@@ -16,6 +16,17 @@
     "retrieved": "2026-10-17",
     "note": "Approximate MSL = ellipsoidal height - geoidUndulation. EGM2008 gives 30.0493 m at the same point. Not a calibrated measurement."
   },
+  "surveyArea": [
+    { "longitude": 40.291, "latitude": 40.6182 },
+    { "longitude": 40.2972, "latitude": 40.6178 },
+    { "longitude": 40.2985, "latitude": 40.6189 },
+    { "longitude": 40.2975, "latitude": 40.62 },
+    { "longitude": 40.2914, "latitude": 40.6199 }
+  ],
+  "rallyPoints": [
+    { "name": "Doğu vadi tabanı", "longitude": 40.3082, "latitude": 40.6178 },
+    { "name": "Kuzeybatı vadi tabanı", "longitude": 40.2862, "latitude": 40.6212 }
+  ],
   "dronePoints": [
     {
       "longitude": 40.2925729751587,
