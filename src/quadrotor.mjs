@@ -31,6 +31,7 @@ import {
   groundHeight,
   returnCharge,
 } from "./failsafe.mjs";
+import { obstacleText } from "./obstacles.mjs";
 export { makeRandom } from "./random.mjs";
 
 // Generic X quad, explicit engineering assumptions; not identified flight data.
@@ -912,8 +913,10 @@ export function simulate(reference, options = {}, onProgress = () => {}) {
     imbalanceSince: null,
     motorFlagged: false,
     returnReason: null,
+    returnNeed: null,
     action: null,
     operator: false,
+    siteLogged: false,
     // Low-passed hover-equivalent shaft power (W), see returnCharge().
     hoverShaft: null,
   };
@@ -960,12 +963,32 @@ export function simulate(reference, options = {}, onProgress = () => {}) {
       }
     }
     if (!failsafe) return;
+    // A landing away from home has chosen its touchdown point.
+    if (guidance.mode === "land" && !monitor.siteLogged) {
+      monitor.siteLogged = true;
+      const site = guidance.landing;
+      if (site.moved)
+        log(
+          t,
+          "failsafe",
+          "İniş yeri engelden uzağa alındı",
+          `${Math.round(site.moved)} m · ${obstacleText(site.obstacle)}`,
+        );
+      else if (site.obstacle && !monitor.operator)
+        log(
+          t,
+          "failsafe",
+          "Engelsiz iniş yeri bulunamadı",
+          `${FAILSAFE.landingSearch} m içinde · ${obstacleText(site.obstacle)}`,
+        );
+    }
     const mode = guidance.mode,
       phase = guidance.missionPhase(t),
-      // The mission can still be interrupted: en route, braking or holding.
+      // The mission can still be interrupted: climbing out, en route,
+      // braking or holding. A failure during the take-off aborts it.
       actionable =
         ["mission", "brake", "hold", "resume"].includes(mode) &&
-        (mode === "hold" || EN_ROUTE.has(phase)),
+        (mode === "hold" || phase === "takeoff" || EN_ROUTE.has(phase)),
       final = mode === "rtl" || mode === "land";
     // GNSS: the fix is declared lost after the timeout without one.
     if (!navigation.gnssAvailable) monitor.gnssLostAt ??= t;
@@ -1001,6 +1024,7 @@ export function simulate(reference, options = {}, onProgress = () => {}) {
       hoverShaft: monitor.hoverShaft,
       voltage: pack.voltage,
       homeHeight: reference.endHeight,
+      speed: Math.hypot(navigation.velocity[0], navigation.velocity[1]),
       settings,
       battery,
       airframe: c,
@@ -1072,10 +1096,16 @@ export function simulate(reference, options = {}, onProgress = () => {}) {
       const action = gnssLost ? "land" : "rtl";
       if (request(t, action)) {
         monitor.returnReason = reason;
+        // Predicted return charge (with the safety factor) at the decision.
+        monitor.returnNeed = need;
         log(
           t,
           "failsafe",
-          action === "rtl" ? "FAILSAFE · eve dönüş (RTL)" : "FAILSAFE · yerinde iniş",
+          action === "land"
+            ? "FAILSAFE · yerinde iniş"
+            : phase === "takeoff"
+              ? "FAILSAFE · kalkış iptal, eve iniş"
+              : "FAILSAFE · eve dönüş (RTL)",
           reason === "battery"
             ? `şarj ${pct(soc)} · dönüş için ${pct(need)} + rezerv ${pct(battery.reserve)}`
             : "motor arızasıyla görev kesildi",
@@ -1148,9 +1178,11 @@ export function simulate(reference, options = {}, onProgress = () => {}) {
   // Escalating failsafe actions: a hold may become a return or a landing,
   // a return a landing, never the other way.
   const RANK = { hold: 1, rtl: 2, land: 3 };
+  // The autopilot's own landings move clear of mapped obstacles.
   function request(t, action) {
     if (RANK[action] <= (RANK[monitor.action] ?? 0)) return false;
-    if (!guidance.stop(t, action)) return false;
+    if (!guidance.stop(t, action, { avoid: true, uncertainty: navigation.eph }))
+      return false;
     monitor.action = action;
     return true;
   }
@@ -1450,6 +1482,9 @@ export function simulate(reference, options = {}, onProgress = () => {}) {
   );
   metrics.landingSite = landing.site;
   metrics.landingName = landing.name ?? null;
+  // Metres a failsafe landing moved clear of an obstacle, and the obstacle.
+  metrics.landingMoved = landing.moved ?? 0;
+  metrics.landingObstacle = landing.obstacle ?? null;
   metrics.homeDistance = Math.hypot(state[0], state[1]);
   metrics.landingPosition = [state[0], state[1]];
   metrics.finalSpeed = norm(Array.from(state.slice(3, 6)));
@@ -1503,6 +1538,7 @@ export function simulate(reference, options = {}, onProgress = () => {}) {
       rtl: guidance.rtl,
       landing,
       returnReason: monitor.returnReason,
+      returnNeed: monitor.returnNeed,
     },
   };
 }

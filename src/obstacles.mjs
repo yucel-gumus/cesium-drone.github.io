@@ -232,6 +232,11 @@ export function obstacleIndex(list, toLocal, cell = OBSTACLE_DEFAULTS.cell) {
       box: [Math.min(...xs) - radius, Math.min(...ys) - radius, Math.max(...xs) + radius, Math.max(...ys) + radius],
     };
   });
+  return gridIndex(items, cell);
+}
+// Grid index of obstacles already in the local frame (items with `xy`,
+// `shape`, `radius` and `box`, as obstacleIndex() makes them).
+export function gridIndex(items, cell = OBSTACLE_DEFAULTS.cell) {
   const grid = new Map();
   items.forEach((o, i) => {
     for (let x = Math.floor(o.box[0] / cell); x <= Math.floor(o.box[2] / cell); x++)
@@ -242,6 +247,33 @@ export function obstacleIndex(list, toLocal, cell = OBSTACLE_DEFAULTS.cell) {
       }
   });
   return { items, grid, cell, tallest: Math.max(0, ...items.map((o) => o.height)) };
+}
+// Indexed obstacles as plain data for the physics worker, which plans
+// failsafe legs over them: the local footprint and what the checklist
+// names, without the geodetic source geometry. `extent` [x0, y0, x1, y1]
+// keeps only obstacles whose padded box meets it.
+export function obstaclesForWorker(index, extent) {
+  if (!index?.items.length) return null;
+  const items = index.items
+    .filter(
+      (o) =>
+        !extent ||
+        (o.box[2] >= extent[0] &&
+          o.box[0] <= extent[2] &&
+          o.box[3] >= extent[1] &&
+          o.box[1] <= extent[3]),
+    )
+    .map((o) => ({
+      kind: o.kind,
+      ...(o.name && { name: o.name }),
+      height: o.height,
+      heightSource: o.heightSource,
+      shape: o.shape,
+      xy: o.xy,
+      radius: o.radius,
+      box: o.box,
+    }));
+  return { cell: index.cell, items };
 }
 
 // Nearest point of segment ab to p.

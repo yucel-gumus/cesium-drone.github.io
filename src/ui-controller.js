@@ -583,10 +583,16 @@ export default class DroneUIController {
       ? null
       : sample.failsafe;
     // An area survey's imaging phase is a grid line, not reconnaissance.
-    const name =
-      phase === "survey" && this.mission.survey
-        ? "Alan haritalama · ızgara hattı"
-        : PHASES[phase];
+    // A failsafe leg flies to home, a rally point or a clear landing site.
+    const site = this.mission.simulation.metrics.landingSite,
+      name =
+        phase === "survey" && this.mission.survey
+          ? "Alan haritalama · ızgara hattı"
+          : phase === "rtl" && site === "rally"
+            ? "Rally noktasına dönüş · RTL"
+            : phase === "rtl" && site === "field"
+              ? "Engelsiz iniş yerine geçiş"
+              : PHASES[phase];
     const label = failsafe ? `${name} — ⚠ ${failsafe}` : name;
     e.flightPhase.textContent =
       this.state === "paused" ? `Duraklatıldı · ${label}` : label;

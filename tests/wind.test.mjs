@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import * as C from "cesium";
-import { createTerrainRoute, buildMission } from "../src/flight-planner.mjs";
+import { createTerrainRoute, buildMission, FLIGHT_DEFAULTS } from "../src/flight-planner.mjs";
 import {
   simulate,
   replayAt,
@@ -115,7 +115,7 @@ test("return charge prices the estimated wind along the leg home", () => {
     p: [1000, 0, 80],
     hoverShaft: 210,
     voltage: 22,
-    settings: { cruiseSpeed: 8, descentSpeed: 1.5 },
+    settings: FLIGHT_DEFAULTS,
     battery: BATTERY,
     airframe: AIRFRAME,
   };

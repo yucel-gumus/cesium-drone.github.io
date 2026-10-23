@@ -22,6 +22,7 @@ import {
   obstacleIndex,
   obstaclesNear,
   tallestNear,
+  obstaclesForWorker,
 } from "./obstacles.mjs";
 export { terrainFollowingProfile } from "./terrain.mjs";
 export const FLIGHT_DEFAULTS = Object.freeze({
@@ -531,12 +532,17 @@ export function terrainAt(mission, p) {
 // The elevation model as plain data for the physics worker, which needs it
 // to plan failsafe legs (direct return, landing in place).
 export function terrainForWorker(mission) {
-  const m = mission.terrainModel;
+  const m = mission.terrainModel,
+    r = m.raster,
+    // Failsafe legs stay inside the raster's hull: obstacles beyond it can
+    // never be under one.
+    extent = r && [r.x0, r.y0, r.x0 + (r.nx - 1) * r.spacing, r.y0 + (r.ny - 1) * r.spacing];
   return {
     stations: m.stations.map((x) => ({ p: x.p, z: x.z, floor: x.floor })),
     raster: m.raster,
     halfWidth: m.halfWidth,
     cell: m.cell,
+    obstacles: obstaclesForWorker(mission.obstacles, extent),
   };
 }
 const AIRBORNE = new Set([

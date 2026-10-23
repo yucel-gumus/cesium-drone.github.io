@@ -160,6 +160,9 @@ function installPageHelpers() {
         homeDistance: s.metrics.homeDistance,
         maxTrackingError: s.metrics.maxTrackingError,
         returnReason: s.failsafe?.returnReason ?? null,
+        returnNeed: s.failsafe?.returnNeed ?? null,
+        landingMoved: s.metrics.landingMoved,
+        rtlRaised: s.failsafe?.rtl?.raised ?? null,
         events: (s.failsafe?.events ?? []).map((e) => ({
           time: e.time,
           kind: e.kind,
@@ -1170,7 +1173,7 @@ try {
   }));
   assert.ok(
     lowBattery.banner.failsafe &&
-      /Eve dönüş · RTL — ⚠ düşük batarya/.test(lowBattery.banner.phase),
+      /Rally noktasına dönüş · RTL — ⚠ düşük batarya/.test(lowBattery.banner.phase),
     JSON.stringify(lowBattery.banner),
   );
   await flyToEnd();
@@ -1260,6 +1263,19 @@ try {
   check(
     "A 30 % loss of rotor 1 effectiveness is detected from the motor imbalance and flown to the nearest rally point by RTL within 2 m tracking",
     motor,
+  );
+  // The same failure during the climb-out aborts the take-off.
+  const aborted = await scenario("motor", 15);
+  assert.ok(
+    aborted.events.some((e) => e.label === "FAILSAFE · kalkış iptal, eve iniş"),
+    JSON.stringify(aborted.events),
+  );
+  assert.equal(aborted.landingSite, "home");
+  assert.ok(aborted.duration < 120 && aborted.landingError < 0.5, JSON.stringify(aborted));
+  assert.ok(aborted.scenario.every((c) => c.ok), JSON.stringify(aborted.scenario));
+  check(
+    `A motor failure during the take-off at 00:15 aborts it and lands back on the pad after ${Math.round(aborted.duration)} s`,
+    aborted,
   );
 
   // Two faults at once escalate together: without GNSS the low battery

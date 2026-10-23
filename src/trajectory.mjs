@@ -186,8 +186,15 @@ export function horizontalReference(path, profile, settings, options = {}) {
       speeds[i],
       Math.sqrt(speeds[i + 1] ** 2 + 2 * 0.65 * (table[i + 1].s - table[i].s)),
     );
-  if (options.jerkSmoothing > 0 && n > 2) {
-    const w = Math.max(1, Math.round(options.jerkSmoothing / h)),
+  // The window is capped at a quarter of the path, so on a short leg (a
+  // failsafe stopping near its target) the erosion cannot reach both
+  // ends from the middle and zero every speed; long paths are unchanged.
+  const smoothing = Math.min(
+    Math.round(options.jerkSmoothing / h),
+    Math.floor((n - 1) / 4),
+  );
+  if (options.jerkSmoothing > 0 && n > 2 && smoothing >= 1) {
+    const w = smoothing,
       squared = speeds.map((v) => v * v);
     const floor = squared.map((_, i) => {
       let min = Infinity;

@@ -15,6 +15,7 @@ import {
   stationAt,
   indexStations,
 } from "./terrain.mjs";
+import { OBSTACLE_DEFAULTS, gridIndex, obstaclesNear } from "./obstacles.mjs";
 
 // In-flight fault scenarios the operator can inject at a mission time. The
 // flight is solved in advance, so a fault is a time-triggered event inside
@@ -59,6 +60,10 @@ export const FAILSAFE = Object.freeze({
   fieldOvershoot: 10,
   // Below this distance a return lands straight down, m.
   homeRadius: 3,
+  // A landing away from home moves at most this far to touch down clear of
+  // obstacles, searching rings this far apart, m.
+  landingSearch: 150,
+  landingSearchStep: 10,
 });
 
 // Operator commands during a flight (Turkish labels for the log).
@@ -104,6 +109,83 @@ export function groundHeight(terrain, x, y) {
   return stationAt(terrain, [x, y])?.height ?? NaN;
 }
 
+// Obstacle index of an elevation model from terrainForWorker(), built once.
+function obstaclesOf(terrain) {
+  const data = terrain?.obstacles;
+  if (!data?.items?.length) return null;
+  terrain.obstacleIndex ??= gridIndex(data.items, data.cell);
+  return terrain.obstacleIndex;
+}
+// Tallest obstacle within `radius` of p, or null.
+function tallestObstacle(index, p, radius) {
+  let tallest = null;
+  for (const hit of obstaclesNear(index, p, radius))
+    if (!tallest || hit.obstacle.height > tallest.height) tallest = hit.obstacle;
+  return tallest;
+}
+// What the checklist and the log name of an obstacle.
+const describe = (o) =>
+  o && {
+    kind: o.kind,
+    ...(o.name && { name: o.name }),
+    height: o.height,
+    heightSource: o.heightSource,
+  };
+
+// Whether the straight leg from p to q, with its corridor sides, lies on
+// the sampled elevation model (corridorFloor() throws where it does not).
+function legOnModel(terrain, p, q) {
+  const d = Math.hypot(q[0] - p[0], q[1] - p[1]),
+    tangent = [(q[0] - p[0]) / d, (q[1] - p[1]) / d],
+    n = Math.ceil(d / 10);
+  try {
+    for (let i = 0; i <= n; i++)
+      corridorFloor(
+        terrain,
+        [p[0] + ((q[0] - p[0]) * i) / n, p[1] + ((q[1] - p[1]) * i) / n],
+        tangent,
+      );
+  } catch {
+    return false;
+  }
+  return true;
+}
+
+// Where a landing away from home touches down: the point itself when no
+// obstacle footprint lies within the lateral buffer, otherwise the nearest
+// point of the elevation model that is clear, searched on rings
+// FAILSAFE.landingSearchStep apart out to FAILSAFE.landingSearch (east
+// first, counter-clockwise, so the choice is deterministic). The buffer
+// grows by the navigation's horizontal uncertainty (EPH): on dead
+// reckoning the vehicle only knows roughly where it is, so it needs a
+// wider gap. Only sites whose leg stays on the sampled elevation model
+// count. With nothing clear in reach the vehicle lands where it is and
+// the checklist reports the obstacle. Returns { xy, moved (m), obstacle
+// (the one avoided or landed on) }.
+export function clearLandingSite(terrain, p, settings, uncertainty = 0) {
+  const index = obstaclesOf(terrain),
+    buffer = (settings.obstacleLateral ?? OBSTACLE_DEFAULTS.lateral) + uncertainty,
+    here = { xy: [p[0], p[1]], moved: 0, obstacle: null };
+  if (!index) return here;
+  const below = tallestObstacle(index, p, buffer);
+  if (!below) return here;
+  const step = FAILSAFE.landingSearchStep;
+  for (let r = step; r <= FAILSAFE.landingSearch + 1e-9; r += step) {
+    const n = Math.max(8, Math.ceil((2 * Math.PI * r) / step));
+    for (let k = 0; k < n; k++) {
+      const a = (2 * Math.PI * k) / n,
+        q = [p[0] + r * Math.cos(a), p[1] + r * Math.sin(a)];
+      if (
+        Number.isFinite(groundHeight(terrain, q[0], q[1])) &&
+        !obstaclesNear(index, q, buffer).length &&
+        legOnModel(terrain, p, q)
+      )
+        return { xy: q, moved: r, obstacle: describe(below) };
+    }
+  }
+  return { ...here, obstacle: describe(below) };
+}
+
 // CG rest height and landing options for a safe point: the pad at home, the
 // elevation model's ground at a rally point (or wherever the vehicle lands
 // in place), which is only known to the model's accuracy.
@@ -127,10 +209,13 @@ function landingAt(target, terrain, settings) {
 // autopilots with a terrain database fly it: from the stop point `p` (ENU,
 // at rest) climb in place to the leg's height while turning towards the
 // target, fly the leg at the target AGL over the elevation model, then land:
-// on the pad at home, on the modelled ground at a rally point. The leg's
-// requirement is the raster/corridor floor plus AGL and is never below the
-// stop height at its start, so the climb-out is the only height change
-// before the leg profile takes over.
+// on the pad at home, on the modelled ground at a rally point or a clear
+// field site. The leg's requirement follows the planned route's rule: the
+// raster/corridor floor plus the target AGL, or plus the obstacle clearance
+// over the tallest obstacle within the corridor and the lateral buffer
+// where that is higher. It is never below the stop height at its start, so
+// the climb-out is the only height change before the leg profile takes
+// over.
 export function buildReturn(
   p,
   yaw,
@@ -161,7 +246,22 @@ export function buildReturn(
         ? corridorFloor(terrain, k.p, k.tangent)
         : -settings.landingOffset,
     ),
-    requirement = floor.map((f) => f + settings.agl);
+    requirement = floor.map((f) => f + settings.agl),
+    obstacles = obstaclesOf(terrain),
+    reach =
+      (settings.corridorHalfWidth ?? terrain?.halfWidth ?? 0) +
+      (settings.obstacleLateral ?? OBSTACLE_DEFAULTS.lateral),
+    clearance = settings.obstacleClearance ?? OBSTACLE_DEFAULTS.clearance;
+  // The obstacle that lifts the leg most above its target AGL.
+  let raised = null;
+  if (obstacles)
+    table.forEach((k, i) => {
+      const o = tallestObstacle(obstacles, k.p, reach);
+      if (!o || o.height + clearance <= settings.agl) return;
+      requirement[i] = floor[i] + o.height + clearance;
+      const lift = o.height + clearance - settings.agl;
+      if (!raised || lift > raised.lift) raised = { lift, obstacle: describe(o) };
+    });
   requirement[0] = Math.max(requirement[0], p[2]);
   const spacing = table.length > 1 ? table[1].s - table[0].s : 1,
     profile = terrainFollowingProfile(requirement, spacing, settings),
@@ -192,17 +292,48 @@ export function buildReturn(
       distance,
       climb: profile[0] - p[2],
       target,
+      raised,
     },
   };
 }
 
-// Landing in place at the point the autopilot believes it holds, onto the
-// elevation model's ground there.
-export function buildFieldLanding(p, yaw, terrain, settings) {
+// Landing away from home, onto the elevation model's ground under the point
+// the autopilot believes it holds. With `avoid` (the autopilot's own
+// failsafe landings) a point over an obstacle is replaced by the nearest
+// clear site, flown to over the obstacle profile; an operator's "land"
+// lands exactly where commanded.
+export function buildFieldLanding(
+  p,
+  yaw,
+  terrain,
+  settings,
+  { avoid = false, uncertainty = 0 } = {},
+) {
+  const site =
+    avoid && terrain ? clearLandingSite(terrain, p, settings, uncertainty) : null;
+  if (site?.moved) {
+    const built = buildReturn(p, yaw, terrain, settings, {
+      site: "field",
+      xy: site.xy,
+    });
+    return {
+      ref: built.ref,
+      base: built.land.base,
+      ground: built.land.ground,
+      leg: built.leg,
+      site,
+    };
+  }
   const sequence = phaseSequence(),
     land = landingAt({ site: "field", xy: p }, terrain, settings);
   appendLanding(sequence, p[2], yaw, settings, { ...land, settle: 2 });
-  return { ref: finish(sequence, null), base: land.base, ground: land.ground };
+  return {
+    ref: finish(sequence, null),
+    base: land.base,
+    ground: land.ground,
+    leg: null,
+    site,
+  };
 }
 
 function finish(sequence, leg) {
@@ -240,6 +371,7 @@ export function makeGuidance(mission, context = {}) {
     surface = 0,
     rtl = null,
     landing = { site: "home", xy: [0, 0] },
+    avoidObstacles = false,
     transitions = [];
   const guidance = {
     get mode() {
@@ -336,15 +468,23 @@ export function makeGuidance(mission, context = {}) {
         yawRate: n.yawRate * c.rate,
         // The camera keeps its distance trigger while the vehicle brakes or
         // speeds up on the mission path; a return switches it off at once.
-        phase: mode === "hold" ? "hold" : pending === "rtl" ? "rtl" : n.phase,
+        // An aborted take-off brakes its climb and stays a take-off.
+        phase:
+          mode === "hold"
+            ? "hold"
+            : pending === "rtl" && n.phase !== "takeoff"
+              ? "rtl"
+              : n.phase,
       };
     },
     // Slow the active clock to a stop along the path, then do `action`
     // ("hold", "rtl" or "land"). Refused once the vehicle is in its final
-    // landing.
-    stop(t, action) {
+    // landing. `avoid` lets a landing move clear of obstacles (failsafes),
+    // with the buffer widened by the position `uncertainty` (EPH, m).
+    stop(t, action, { avoid = false, uncertainty = 0 } = {}) {
       if (FINAL_PHASES.has(guidance.activePhase(t)) && mode !== "hold")
         return false;
+      if (action === "land") avoidObstacles = avoid && { uncertainty };
       if (mode === "hold") {
         if (action !== "hold") start(action, t);
         return true;
@@ -420,10 +560,23 @@ export function makeGuidance(mission, context = {}) {
             };
       surface = built.land.base;
     } else {
-      const built = buildFieldLanding(p, n.yaw, terrain, settings);
+      const built = buildFieldLanding(p, n.yaw, terrain, settings, {
+        avoid: Boolean(avoidObstacles),
+        uncertainty: avoidObstacles?.uncertainty ?? 0,
+      });
       active = { ref: built.ref, base: t, kind: "land" };
       surface = built.base;
-      landing = { site: "field", xy: [p[0], p[1]], ground: built.ground };
+      landing = {
+        site: "field",
+        xy: built.site?.moved ? built.site.xy : [p[0], p[1]],
+        ground: built.ground,
+        // Distance moved clear of an obstacle and the obstacle avoided (or,
+        // with nothing clear in reach, the one landed on).
+        moved: built.site?.moved ?? 0,
+        obstacle: built.site?.obstacle ?? null,
+      };
+      if (built.leg)
+        rtl = { ...built.leg, start: t + built.leg.start, from: [p[0], p[1], p[2]] };
     }
     setMode(action, t);
     return referenceAt(active.ref, 0);
@@ -431,42 +584,91 @@ export function makeGuidance(mission, context = {}) {
   return guidance;
 }
 
-// Predicted charge (fraction of capacity) to return home from `p` (ENU,
-// height above home in p[2]). The leg is flown at 70 % of cruise ground
-// speed (terrain following slows it) straight home, so the estimated wind
-// sets its airspeed: a headwind leg needs more power than a tailwind one.
-// Power follows the simulation's own rotor model, shaft power ∝ thrust^1.5,
-// with the thrust tilted to hold the leg's drag, T = m √(g² + (F_d / m)²):
-// P_leg = P_hover (1 + (F_d / m g)²)^¾, from the hover-equivalent shaft
-// power measured in flight (`hoverShaft`). Brake, climb-out, descent from
-// the higher of the current and the planned return height over home and
-// the landing crawl are flown near hover power. The failsafe safety factor
-// covers the model's error.
+// The planner's own timing of a return, which the battery check needs at
+// every control step and cannot rebuild a leg for: the direct leg's
+// duration over level ground at a few distances, as buildReturn() plans it
+// with the jerk smoothing of its speed profile (linear between them, the
+// last slope beyond), the brake to a stop of the guidance time warp, the
+// turn and climb-out, and the rest-to-rest quintic descent and touchdown
+// crawl of appendLanding(). Cached per settings object.
+const timings = new WeakMap();
+export function returnTiming(settings) {
+  let timing = timings.get(settings);
+  if (timing) return timing;
+  const height = settings.agl - settings.landingOffset,
+    distances = [0, 10, 25, 50, 100, 200, 400, 800, 1600, 3200],
+    legs = distances.map((d) =>
+      d < FAILSAFE.homeRadius
+        ? 0
+        : buildReturn([d, 0, height], 0, null, settings).ref.horizontalDuration,
+    ),
+    crawl = settings.landingCrawlHeight ?? 3,
+    creep = settings.landingSpeed ?? 0.35,
+    below = settings.landingOvershoot ?? 2.5,
+    ramp = 2,
+    rampEnd = crawl - (creep * ramp) / 2;
+  timing = {
+    leg(d) {
+      let i = 0;
+      while (i < distances.length - 2 && d > distances[i + 1]) i++;
+      const f = (d - distances[i]) / (distances[i + 1] - distances[i]);
+      return Math.max(0, legs[i] + (legs[i + 1] - legs[i]) * f);
+    },
+    brake: (speed) => Math.max(2, (1.875 * speed) / settings.acceleration),
+    climbOut: verticalDuration(0, settings.climbSpeed, settings),
+    // Settle, quintic descent to the crawl height, ramp and crawl to
+    // contact; the overshoot below the surface covers the land detector.
+    landing: (drop) =>
+      4 +
+      verticalDuration(Math.max(0, drop - crawl), settings.descentSpeed, settings) +
+      ramp +
+      (rampEnd + below) / creep,
+  };
+  timings.set(settings, timing);
+  return timing;
+}
+
+// Predicted charge (fraction of capacity) to return from `p` (ENU, relative
+// to the return target, height above home in p[2]). The phases are timed as
+// the planner will fly them (returnTiming()), so the prediction is unbiased
+// and the failsafe safety factor covers only the model's error. The leg's
+// mean ground speed and the estimated wind set its airspeed: a headwind leg
+// needs more power than a tailwind one. Power follows the simulation's own
+// rotor model, shaft power ∝ thrust^1.5, with the thrust tilted to hold the
+// leg's drag, T = m √(g² + (F_d / m g)²): P_leg = P_hover (1 + (F_d / m
+// g)²)^¾, from the hover-equivalent shaft power measured in flight
+// (`hoverShaft`). Brake, turn, descent from the target AGL (or the planned
+// return height over home, if higher) and the landing crawl are flown near
+// hover power; `speed` is the current ground speed the brake starts from.
 export function returnCharge({
   p,
   wind = [0, 0],
   hoverShaft,
   voltage,
   homeHeight = 0,
+  speed,
   settings,
   battery,
   airframe,
 }) {
-  const distance = Math.hypot(p[0], p[1]),
-    speed = 0.7 * settings.cruiseSpeed,
+  const timing = returnTiming(settings),
+    distance = Math.hypot(p[0], p[1]),
+    leg = distance < FAILSAFE.homeRadius ? 0 : timing.leg(distance),
+    legSpeed = leg > 0 ? distance / leg : 0,
     toward = distance > 1e-6 ? [-p[0] / distance, -p[1] / distance] : [0, 0],
-    airspeed = Math.hypot(speed * toward[0] - wind[0], speed * toward[1] - wind[1]),
+    airspeed = Math.hypot(
+      legSpeed * toward[0] - wind[0],
+      legSpeed * toward[1] - wind[1],
+    ),
     drag =
       0.5 * airframe.airDensity * airframe.dragArea * airspeed * airspeed +
       airframe.linearDrag * airspeed,
     tilt = (1 + (drag / (airframe.mass * airframe.gravity)) ** 2) ** 0.75,
     electrical = (shaft) => shaft / battery.propulsionEfficiency + battery.avionicsPower,
-    leg = distance / speed,
     rest =
-      15 +
-      4 +
-      (1.25 * Math.max(0, p[2], homeHeight)) / settings.descentSpeed +
-      25,
+      timing.brake(speed ?? settings.cruiseSpeed) +
+      timing.climbOut +
+      timing.landing(Math.max(settings.agl, homeHeight)),
     joules = electrical(hoverShaft * tilt) * leg + electrical(hoverShaft) * rest;
   return (
     (FAILSAFE.batteryMargin * joules) /

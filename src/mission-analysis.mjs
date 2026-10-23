@@ -304,12 +304,12 @@ export function contingencyChecks(mission) {
       label: "Arıza sonrası iniş",
       detail:
         site === "field"
-          ? `yerinde · evden ${distance(m.homeDistance)} · hedeften ${metres(m.landingError)} · temas ${m.contactSpeed.toFixed(2)} m/s`
+          ? `yerinde${m.landingMoved ? ` · engelden ${metres(m.landingMoved, 0)} uzağa alındı` : ""} · evden ${distance(m.homeDistance)} · hedeften ${metres(m.landingError)} · temas ${m.contactSpeed.toFixed(2)} m/s`
           : site === "rally"
             ? `rally noktası (${m.landingName}) · evden ${distance(m.homeDistance)} · hedeften ${metres(m.landingError, 2)} · temas ${m.contactSpeed.toFixed(2)} m/s`
             : `evde · ${metres(m.landingError, 2)} · temas ${m.contactSpeed.toFixed(2)} m/s`,
       ...(landedOn && {
-        detail: `${site === "field" ? "yerinde" : `rally noktası (${m.landingName})`} · ⚠ engel üzerine: ${obstacleText(landedOn)} · evden ${distance(m.homeDistance)}`,
+        detail: `${site === "field" ? `yerinde${m.landingMoved ? ` (engelden ${metres(m.landingMoved, 0)} uzağa alındı, ölü hesap hatasıyla yine engele indi)` : ""}` : `rally noktası (${m.landingName})`} · ⚠ engel üzerine: ${obstacleText(landedOn)} · evden ${distance(m.homeDistance)}`,
       }),
       ok: m.disarmed && m.contactSpeed < 1 && !landedOn,
     },
@@ -317,8 +317,10 @@ export function contingencyChecks(mission) {
       id: "fault-clearance",
       label: "Arıza sonrası arazi açıklığı",
       detail: Number.isFinite(mission.returnClearance)
-        ? `rota ${metres(mission.minClearance)} · dönüş bacağı ${metres(mission.returnClearance)} (sapma ${metres(mission.returnDeviation)})`
-        : `${metres(mission.minClearance)} · hedef ${s.agl} m`,
+        ? `${Number.isFinite(mission.minClearance) ? `rota ${metres(mission.minClearance)}` : "rota uçulmadı"} · dönüş bacağı ${metres(mission.returnClearance)} (sapma ${metres(mission.returnDeviation)})`
+        : Number.isFinite(mission.minClearance)
+          ? `${metres(mission.minClearance)} · hedef ${s.agl} m`
+          : "rota uçulmadı: kalkış iptal edildi",
       ok:
         Math.min(mission.minClearance, mission.returnClearance) >=
         s.agl - s.clearanceTolerance,
