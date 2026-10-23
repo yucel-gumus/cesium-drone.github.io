@@ -20,7 +20,7 @@
 
 Bir operatörün sahada yürüttüğü keşif görevini uçtan uca modeller: görev planlanır, **uçuş öncesi kontrol listesinden** geçer, drone Uzungöl'ün (Çaykara, Trabzon) gerçek arazisi üzerinde **sabit AGL'de araziyi izleyerek**, OpenStreetMap'teki **bina ve orman engellerinden** güvenli açıklıkla, bir keşif rotasını ya da bir poligonu kaplayan **alan haritalama ızgarasını** (gerekirse **batarya değişimli birkaç uçuşta**) uçar, kamera mesafeye göre fotoğraf çeker, batarya rezerviyle eve döner ve **iniş dedektörüyle** motorlarını durdurur. Uçuşa zamanı seçilen **bir ya da iki arıza enjekte edilebilir** (batarya hücresi, GNSS kesintisi/kaybı, motor verim kaybı); otopilotun failsafe'leri buna **en yakın güvenli noktaya (rally) dönüş**, ölü hesapla konum tutma veya yerinde inişle tepki verir, **operatör de oynatma sırasında RTL, konum tutma, devam ve yerinde iniş komutlarıyla** uçuşu devralabilir. Uçuş bir animasyon değil: 240 Hz'de çözülen 6 serbestlik dereceli rijit cisim dinamiğidir; yer etkisi, vortex ring durumu, rotor sürüklemesi ve kanat çırpması (blade flapping) dahildir. Kontrolcü gerçek durumu değil, **IMU, GNSS, barometre ve manyetometreyi birleştiren 17 durumlu hata durumlu Kalman filtresinin (ESKF)** kestirdiği konumu, hızı, yönelimi ve rüzgârı kullanır. Görev sonunda plan ve kayıt KML, QGroundControl `.plan` (Survey öğesiyle), GeoJSON, CSV ve **PX4 ULog** olarak dışa aktarılır; gerçek bir **PX4 uçuş kaydı yüklenerek** model kalibre edilebilir.
 
-Model, ölçümlerle tanımlanmış ticari bir drone değil; açık parametreli **genel 2 kg X quad**, genel 6S LiPo batarya ve genel 1″ 20 MP haritalama kamerasıdır. Gerçek bir araca yaklaştırmak için [uçuş kaydıyla kalibrasyon](#-uçuş-kaydıyla-kalibrasyon) aracı vardır; bu depoda gerçek bir uçuş kaydıyla yapılmış bir kalibrasyon yoktur.
+Bu, **deneme ve gösterim amaçlı bir örnek simülasyon projesidir**: gerçek bir drone'a bağlı değildir ve gerçek uçuş verisi kullanmaz. Model, ölçümlerle tanımlanmış ticari bir drone değil; açık parametreli **genel 2 kg X quad**, genel 6S LiPo batarya ve genel 1″ 20 MP haritalama kamerasıdır. [Uçuş kaydıyla kalibrasyon](#-uçuş-kaydıyla-kalibrasyon) aracı, simülasyonun kendi dışa aktardığı PX4 ULog kaydıyla gösterilir.
 
 ## ✨ Öne çıkanlar
 
@@ -504,16 +504,19 @@ Tarayıcı regresyonu sunucu başlatmaz ve yalnızca sunulan `dist/` derlemesini
 
 ## 📏 Doğruluk sınırları
 
-Bu, kuvvet/tork entegrasyonu, enerji, aerodinamik ve navigasyon modelleri olan bir simülasyon çekirdeğidir. **Sertifikalı veya gerçek uçuş verisiyle doğrulanmış bir eğitim/FDM ürünü değildir.** Kalibrasyon aracı sentetik kayıtlarla doğrulanmıştır; gerçek bir aracın değerleri için o aracın ESC telemetrili uçuş kaydı, ayrıca kütle/CG ölçümü, pervane itki-tork testi ve kamera kalibrasyonu gerekir.
+Bu, kuvvet/tork entegrasyonu, enerji, aerodinamik ve navigasyon modelleri olan bir simülasyon çekirdeğidir. **Deneme amaçlı bir örnektir; sertifikalı veya gerçek uçuş verisiyle doğrulanmış bir eğitim/FDM ürünü değildir.** Bütün modeller analitik sonuçlara, sentetik kayıtlara ve gerçek arazi üzerindeki kendi tutarlılık denetimlerine göre doğrulanır. Kalibrasyon aracı da sentetik kayıtlarla doğrulanmıştır; belirli bir gerçek aracı temsil etmek, o aracın ESC telemetrili uçuş kaydını, kütle/CG ölçümünü, pervane itki-tork testini ve kamera kalibrasyonunu gerektirirdi.
 
 Korunan varsayımlar: sabit yerçekimi, hava yoğunluğu ve batarya sıcaklığı; tek rijit gövde; karesel rotor itkisi; genel LiPo eğrisi ve sabit itki verimi; ölçülmemiş rotor ataleti ve kanat çırpması katsayısı; ampirik VRS modeli; basitleştirilmiş, sabit katsayılı sürükleme; düz ve rijit pad üzerinde, gövdeyi düz tutan noktasal iniş takımı teması; sabit temsilî irtifaya göre Dryden ölçekleri; tek sabit jeoit ondülasyonu; kamera lens bozulması ve yuvarlanan deklanşör yok; Coriolis yok. Manyetometre bozulması basit bir Gauss–Markov sürecidir; ESKF ayarları sentetik sensörler için yapılmıştır. Engeller bir OSM anlık görüntüsüdür: bina yüksekliklerinin çoğu ve bütün ağaç yükseklikleri varsayımdır, elektrik hatları bölgede kayıtlı değildir ve çarpışma fiziği yoktur (yalnızca açıklık denetlenir); failsafe bacakları da engel profiline göre planlanır, ancak engelsiz iniş yeri kestirilen konuma göre seçilir: GNSS yokken tampon EPH kadar genişler, inişin kendisi sırasında büyüyen ölü hesap hatası aracı yine de engelin üstüne indirebilir. Arızalar planlama sırasında seçilir ve önceden çözülür; operatör komutları uçuşu yeniden çözer, çubukla manuel uçuş yoktur. Failsafe bacakları 25 m aralıklı yükseklik rasterine göre planlanır; yerinde iniş zemini bu rasterin yüzeyidir ve eğimli zemin düz bir yüzey gibi temas eder. Gerçek drone'a komut gönderilmez.
 
-## 🗺️ Yol haritası
+## 🗺️ Kapsam
 
-- Kullanıcının kendi ESC telemetrili PX4 kayıtlarıyla kalibrasyon ve doğrulama; komut edilen devirden motor zaman sabiti, gerilim–şarj eğrisinden paket kapasitesi
-- ArduPilot DataFlash (`.bin`) kayıt okuyucu
-- Gerçek taç yüksekliği için LiDAR/DSM tabanlı yüzey modeli ve hava sahası (NOTAM, yasak bölge) katmanı
-- PX4 SITL ile karşılaştırmalı doğrulama
+Proje deneme ve gösterim amaçlıdır; gerçek uçuş verisi yoktur ve kullanılmayacaktır. Bu yüzden şunlar bilinçli olarak kapsam dışıdır:
+
+- Gerçek bir aracın uçuş kayıtlarıyla kalibrasyon ve doğrulama. Kalibrasyon aracı simülasyonun kendi ULog ve CSV kayıtlarıyla gösterilir.
+- Gerçek ağaç taç yükseklikleri için LiDAR/DSM yüzey modeli ve güncel hava sahası (NOTAM, yasak bölge) verisi.
+- PX4 SITL ile karşılaştırmalı doğrulama.
+
+Planlanmış bekleyen bir özellik yoktur. Simülasyonun bütün parçaları birim testleri ve gerçek arazi üzerindeki tarayıcı regresyonuyla doğrulanır.
 
 ## 📁 Dosya yapısı
 
