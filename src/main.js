@@ -941,8 +941,8 @@ function installMission() {
     },
     point: {
       pixelSize: 7,
-      color: C.Color.fromCssColorString("#b5ed8b"),
-      outlineColor: C.Color.BLACK,
+      color: C.Color.fromCssColorString("#EC7D55"),
+      outlineColor: C.Color.fromCssColorString("#253341"),
       outlineWidth: 1,
       distanceDisplayCondition: new C.DistanceDisplayCondition(80, 20000),
     },
@@ -964,7 +964,7 @@ function installMission() {
       positions: path,
       width: 2,
       arcType: C.ArcType.NONE,
-      material: C.Color.fromCssColorString("#b5ed8b").withAlpha(0.7),
+      material: C.Color.fromCssColorString("#EC7D55").withAlpha(0.75),
     },
   });
   const log = mission.simulation,
@@ -983,7 +983,7 @@ function installMission() {
       }, false),
       width: 3,
       arcType: C.ArcType.NONE,
-      material: C.Color.fromCssColorString("#7bdad1"),
+      material: C.Color.fromCssColorString("#DBE6DD"),
     },
   });
   if (mission.survey) {
@@ -997,7 +997,7 @@ function installMission() {
         ),
         width: 2,
         clampToGround: true,
-        material: C.Color.fromCssColorString("#ffd27a").withAlpha(0.85),
+        material: C.Color.fromCssColorString("#F2A488").withAlpha(0.85),
       },
     });
   }
@@ -1013,7 +1013,7 @@ function installMission() {
         width: 2,
         arcType: C.ArcType.NONE,
         material: new C.PolylineDashMaterialProperty({
-          color: C.Color.fromCssColorString("#ff8f7a"),
+          color: C.Color.fromCssColorString("#AB421C"),
           dashLength: 12,
         }),
       },
@@ -1028,19 +1028,19 @@ function installMission() {
       return [g.longitude, g.latitude];
     };
   const OBSTACLE_COLORS = {
-    building: "#d8c3a5",
-    mast: "#ff8f7a",
-    tower: "#ff8f7a",
-    tree: "#7fb069",
-    tree_row: "#7fb069",
-    other: "#d8c3a5",
+    building: "#DCE3EA",
+    mast: "#AB421C",
+    tower: "#AB421C",
+    tree: "#DBE6DD",
+    tree_row: "#DBE6DD",
+    other: "#BCC7D2",
   };
   for (const { obstacle: o, nearest, ground } of obstaclesAlongPath(mission)) {
     if (o.kind === "forest") continue;
     const height = toGeodetic(C, mission, [nearest[0], nearest[1], ground]).height,
       base = height - 2,
       top = height + o.height,
-      material = C.Color.fromCssColorString(OBSTACLE_COLORS[o.kind] ?? "#d8c3a5").withAlpha(0.8),
+      material = C.Color.fromCssColorString(OBSTACLE_COLORS[o.kind] ?? "#BCC7D2").withAlpha(0.8),
       name = `Engel · ${obstacleText(o)}`;
     if (o.shape === "polygon")
       obstacleLayer.entities.add({
@@ -1084,14 +1084,14 @@ function installMission() {
     obstacleLayer.entities.add({
       name: "En düşük engel açıklığı",
       position: C.Cartesian3.fromDegrees(lon, lat, groundAt(closest.nearest) + closest.obstacle.height),
-      point: { pixelSize: 7, color: C.Color.fromCssColorString("#ff8f7a"), disableDepthTestDistance: 15000 },
+      point: { pixelSize: 7, color: C.Color.fromCssColorString("#AB421C"), disableDepthTestDistance: 15000 },
       label: {
         text: `▲ ${obstacleText(closest.obstacle)} · açıklık ${Math.round(closest.clearance)} m`,
         font: "11px sans-serif",
         pixelOffset: new C.Cartesian2(0, -14),
-        fillColor: C.Color.WHITE,
+        fillColor: C.Color.fromCssColorString("#F5F9F5"),
         showBackground: true,
-        backgroundColor: C.Color.fromCssColorString("#2b1d16").withAlpha(0.85),
+        backgroundColor: C.Color.fromCssColorString("#AB421C").withAlpha(0.9),
         disableDepthTestDistance: 15000,
         distanceDisplayCondition: new C.DistanceDisplayCondition(30, 6000),
       },
@@ -1105,8 +1105,8 @@ function installMission() {
       position: C.Cartesian3.fromRadians(ground.longitude, ground.latitude),
       point: {
         pixelSize: 10,
-        color: C.Color.fromCssColorString("#ffd27a"),
-        outlineColor: C.Color.BLACK,
+        color: C.Color.fromCssColorString("#F2A488"),
+        outlineColor: C.Color.fromCssColorString("#253341"),
         outlineWidth: 1,
         heightReference: C.HeightReference.CLAMP_TO_GROUND,
         disableDepthTestDistance: 15000,
@@ -1115,9 +1115,9 @@ function installMission() {
         text: `R  ${point.name}`,
         font: "bold 11px sans-serif",
         pixelOffset: new C.Cartesian2(0, -18),
-        fillColor: C.Color.WHITE,
+        fillColor: C.Color.fromCssColorString("#F5F9F5"),
         showBackground: true,
-        backgroundColor: C.Color.fromCssColorString("#101b20").withAlpha(0.85),
+        backgroundColor: C.Color.fromCssColorString("#253341").withAlpha(0.88),
         heightReference: C.HeightReference.CLAMP_TO_GROUND,
         disableDepthTestDistance: 15000,
         distanceDisplayCondition: new C.DistanceDisplayCondition(30, 15000),
@@ -1141,12 +1141,12 @@ function installMission() {
         pixelSize: 9,
         color: C.Color.fromCssColorString(
           event.kind === "fault"
-            ? "#ff8f7a"
+            ? "#AB421C"
             : event.kind === "operator"
-              ? "#8fd3ff"
-              : "#ffd27a",
+              ? "#DCE3EA"
+              : "#EC7D55",
         ),
-        outlineColor: C.Color.BLACK,
+        outlineColor: C.Color.fromCssColorString("#253341"),
         outlineWidth: 1,
         disableDepthTestDistance: 15000,
       },
@@ -1163,9 +1163,11 @@ function installMission() {
             ? C.VerticalOrigin.BOTTOM
             : C.VerticalOrigin.TOP,
         pixelOffset: new C.Cartesian2(0, event.kind === "fault" ? -10 : 10),
-        fillColor: C.Color.WHITE,
+        fillColor: C.Color.fromCssColorString("#F5F9F5"),
         showBackground: true,
-        backgroundColor: C.Color.fromCssColorString("#3a1d18").withAlpha(0.85),
+        backgroundColor: C.Color.fromCssColorString(
+          event.kind === "fault" ? "#AB421C" : "#253341",
+        ).withAlpha(0.9),
         disableDepthTestDistance: 15000,
         distanceDisplayCondition: new C.DistanceDisplayCondition(30, 12000),
       },
@@ -1173,7 +1175,7 @@ function installMission() {
   }
   // Image footprints draped on the terrain; each appears when its photo is
   // taken and stays until the end of the mission.
-  const footprintColor = C.Color.fromCssColorString("#7bdad1").withAlpha(0.09);
+  const footprintColor = C.Color.fromCssColorString("#DBE6DD").withAlpha(0.16);
   for (const photo of analysis.capture.photos) {
     const corners = photo.corners.map((c) => {
       const g = toGeodetic(C, mission, c);
@@ -1203,15 +1205,15 @@ function installMission() {
       semiMajorAxis: 2,
       semiMinorAxis: 2,
       height: home.height,
-      material: C.Color.fromCssColorString("#b5ed8b").withAlpha(0.55),
+      material: C.Color.fromCssColorString("#EC7D55").withAlpha(0.6),
     },
     label: {
       text: "H  KALKIŞ / İNİŞ",
       font: "bold 12px sans-serif",
       pixelOffset: new C.Cartesian2(0, -24),
-      fillColor: C.Color.WHITE,
+      fillColor: C.Color.fromCssColorString("#F5F9F5"),
       showBackground: true,
-      backgroundColor: C.Color.fromCssColorString("#101b20").withAlpha(0.85),
+      backgroundColor: C.Color.fromCssColorString("#253341").withAlpha(0.88),
       disableDepthTestDistance: 15000,
       // Hide the label at close follow ranges (1.2–5 m) so it does not cover
       // the drone model, and beyond 15 km where it would be unreadable anyway.
